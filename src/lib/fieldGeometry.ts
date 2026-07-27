@@ -178,3 +178,19 @@ export function spacingWarnings(
   }
   return out;
 }
+
+/** Initial bearing from one point to another, degrees clockwise from north. */
+export function bearingBetween(
+  from: [number, number],
+  to: [number, number],
+): number {
+  const p = Math.PI / 180;
+  const [lat1, lng1] = from;
+  const [lat2, lng2] = to;
+  const dLng = (lng2 - lng1) * p;
+  const y = Math.sin(dLng) * Math.cos(lat2 * p);
+  const x =
+    Math.cos(lat1 * p) * Math.sin(lat2 * p) -
+    Math.sin(lat1 * p) * Math.cos(lat2 * p) * Math.cos(dLng);
+  return (((Math.atan2(y, x) * 180) / Math.PI) + 360) % 360;
+}

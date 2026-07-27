@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import type * as L from "leaflet";
 import {
   PRESETS,
+  bearingBetween,
   fieldShape,
   presetByKey,
   spacingWarnings,
@@ -76,6 +77,11 @@ export default function FieldMap({
   );
   const [status, setStatus] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<
+    { label: string; lat: number; lng: number }[]
+  >([]);
+  const [searching, setSearching] = useState(false);
 
   // Leaflet touches `window`, so it can only load in the browser.
   useEffect(() => {
@@ -104,9 +110,11 @@ export default function FieldMap({
         )
         .addTo(map);
 
+      leaflet.control.scale({ metric: true, imperial: true }).addTo(map);
+
       layerRef.current = leaflet.layerGroup().addTo(map);
       mapRef.current = map;
-      setStatus("Click the map to place a field.");
+      setStatus("Search for your site, then click the map to place a field.");
 
       map.on("click", (e: L.LeafletMouseEvent) => {
         setFields((prev) => {
@@ -193,6 +201,46 @@ export default function FieldMap({
           );
         })
         .addTo(layer);
+
+      // Rotation handle: drag the nose of the field to spin it in place.
+      if (active) {
+        const nose: [number, number] = [
+          (shape.outline[0][0] + shape.outline[1][0]) / 2,
+          (shape.outline[0][1] + shape.outline[1][1]) / 2,
+        ];
+        leaflet
+          .polyline([shape.center, nose], {
+            color: "#d4fe4f",
+            weight: 1,
+            opacity: 0.6,
+            dashArray: "3 4",
+          })
+          .addTo(layer);
+        leaflet
+          .marker(nose, {
+            draggable: true,
+            icon: leaflet.divIcon({
+              className: "",
+              html: `<div title="Drag to rotate" style="
+                transform:translate(-50%,-50%);
+                width:16px;height:16px;border-radius:50%;
+                background:#d4fe4f;border:2px solid #08090b;
+                cursor:grab;
+              "></div>`,
+            }),
+          })
+          .on("drag", (e: L.LeafletEvent) => {
+            const ll = (e.target as L.Marker).getLatLng();
+            const deg = bearingBetween(
+              [f.centerLat, f.centerLng],
+              [ll.lat, ll.lng],
+            );
+            setFields((prev) =>
+              prev.map((x, j) => (j === i ? { ...x, bearing: Math.round(deg) } : x)),
+            );
+          })
+          .addTo(layer);
+      }
     });
 
     points.forEach((p, i) => {
@@ -241,9 +289,53 @@ export default function FieldMap({
 
   return (
     <div className="mt-8">
+      <form
+        onSubmit={async (e) => {
+          e.preventDefault();
+          if (query.trim().length < 3) return;
+          setSearching(true);
+          const res = await fetch(`/api/geocode?q=${encodeURIComponent(query)}`);
+          const data = await res.json().catch(() => ({ results: [] }));
+          setResults(data.results ?? []);
+          setSearching(false);
+          if (!data.results?.length) setStatus("No places matched that search.");
+        }}
+        className="mb-3 flex gap-2"
+      >
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search an address, park, or campus — e.g. Swope Park, Kansas City"
+          className="field"
+        />
+        <button type="submit" disabled={searching} className="btn btn-ghost disabled:opacity-40">
+          {searching ? "…" : "Find"}
+        </button>
+      </form>
+
+      {results.length > 0 && (
+        <ul className="panel mb-3 divide-y divide-[var(--color-line)]">
+          {results.map((r) => (
+            <li key={`${r.lat},${r.lng}`}>
+              <button
+                onClick={() => {
+                  mapRef.current?.setView([r.lat, r.lng], 18);
+                  setResults([]);
+                  setQuery("");
+                  setStatus("Click the map to place a field.");
+                }}
+                className="w-full px-4 py-2.5 text-left text-sm hover:text-[var(--color-signal)]"
+              >
+                {r.label}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
       <div
         ref={mapEl}
-        className="h-[28rem] w-full rounded-lg border border-[var(--color-line)]"
+        className="h-[32rem] w-full rounded-lg border border-[var(--color-line)]"
       />
 
       <div className="mt-4 flex flex-wrap items-center gap-3">
@@ -329,7 +421,9 @@ export default function FieldMap({
               </select>
             </label>
             <label className="block sm:col-span-2">
-              <span className="mono">Rotation — {active.bearing}°</span>
+              <span className="mono">
+                Rotation — {active.bearing}° · drag the dot on the map to spin it
+              </span>
               <input
                 type="range"
                 min={0}
@@ -351,6 +445,7 @@ export default function FieldMap({
               Delete field
             </button>
             <span className="mono normal-case tracking-normal">
+              {active.lengthM}×{active.widthM}m, {active.endzoneM}m end zones ·{" "}
               {presetByKey(active.preset).note}
             </span>
           </div>
@@ -358,8 +453,10 @@ export default function FieldMap({
       )}
 
       <p className="mono mt-6 normal-case tracking-normal">
-        Click to place · drag the label to move · slider rotates · click a field to
-        select it. Fields stay exactly regulation size at every zoom and rotation.
+        Search a site · click to place · drag the label to move · drag the dot to
+        rotate. Fields are drawn at true size — 100×37m is 91% the length of an
+        American football field, so they should look large. Check against the scale
+        bar in the corner.
       </p>
     </div>
   );
