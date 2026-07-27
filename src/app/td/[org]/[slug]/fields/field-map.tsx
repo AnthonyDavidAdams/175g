@@ -12,6 +12,7 @@ import {
 import {
   PIN_COLORS,
   SITE_ICONS,
+  colorFor,
   iconByKind,
   iconSvg,
   mapPin,
@@ -178,7 +179,7 @@ export default function FieldMap({
                 label: icon.label,
                 lat: e.latlng.lat,
                 lng: e.latlng.lng,
-                color: "#ffffff",
+                color: icon.defaultColor,
               },
             ];
             setSelected({ type: "point", index: next.length - 1 });
@@ -564,9 +565,10 @@ export default function FieldMap({
               }`}
             >
               <span
-                className="inline-flex"
+                className="inline-flex h-4 w-4 items-center justify-center rounded-full"
+                style={{ background: icon.defaultColor }}
                 dangerouslySetInnerHTML={{
-                  __html: iconSvg(icon.kind, 14, armed ? "#0a0c05" : "currentColor"),
+                  __html: iconSvg(icon.kind, 11, "#08090b"),
                 }}
               />
               {icon.label}
@@ -775,9 +777,20 @@ export default function FieldMap({
                 value={activePoint.kind}
                 onChange={(e) =>
                   setPoints((prev) =>
-                    prev.map((x, j) =>
-                      j === selected.index ? { ...x, kind: e.target.value } : x,
-                    ),
+                    prev.map((x, j) => {
+                      if (j !== selected.index) return x;
+                      // Follow the new kind's default unless this pin was
+                      // deliberately recoloured away from its old default.
+                      const wasDefault =
+                        !x.color || x.color === iconByKind(x.kind).defaultColor;
+                      return {
+                        ...x,
+                        kind: e.target.value,
+                        color: wasDefault
+                          ? iconByKind(e.target.value).defaultColor
+                          : x.color,
+                      };
+                    }),
                   )
                 }
                 className="field mt-2"
@@ -806,7 +819,7 @@ export default function FieldMap({
                   }
                   style={{ background: c.hex }}
                   className={`h-7 w-7 rounded-full border-2 ${
-                    (activePoint.color ?? "#ffffff") === c.hex
+                    colorFor(activePoint.kind, activePoint.color) === c.hex
                       ? "border-[var(--color-signal)]"
                       : "border-transparent"
                   }`}

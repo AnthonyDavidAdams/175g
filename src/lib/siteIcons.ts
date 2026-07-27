@@ -13,6 +13,13 @@ export type SiteIcon = {
   svg: string | null;
   /** Short type mark used instead of a glyph, e.g. "P" for parking. */
   mark?: string;
+  /**
+   * Default fill. Chosen so a map reads as a legend the moment it is placed,
+   * without anyone colour-coding by hand — and leaning on the conventions
+   * people already carry: blue for water, red for medical, green for toilets,
+   * amber for food. Overrideable per pin.
+   */
+  defaultColor: string;
   hint: string;
 };
 
@@ -21,18 +28,21 @@ export const SITE_ICONS: SiteIcon[] = [
     kind: "water",
     label: "Water",
     svg: '<path d="M12 3s6 6.6 6 10.5a6 6 0 0 1-12 0C6 9.6 12 3 12 3z"/>',
+    defaultColor: "#4fc3ff",
     hint: "One station per two fields, minimum. Refill on a set schedule — by the time someone reports an empty cooler it has been empty twenty minutes.",
   },
   {
     kind: "trainer",
     label: "Trainer",
     svg: '<rect x="3.5" y="3.5" width="17" height="17" rx="3"/><path d="M12 8v8M8 12h8"/>',
+    defaultColor: "#ff5f45",
     hint: "Put the athletic trainer somewhere shaded, mark it here so people can find it, and print the phone number or radio channel for reaching them on every scorekeeper's clipboard.",
   },
   {
     kind: "hq",
     label: "HQ",
     svg: '<path d="M5 21V3M5 3h12l-2.2 3.8L17 11H5"/>',
+    defaultColor: "#d4fe4f",
     hint: "Where the central scoreboard, site map, team check-in, and lost property live. One obvious place people can always find you.",
   },
   {
@@ -40,6 +50,7 @@ export const SITE_ICONS: SiteIcon[] = [
     label: "Parking",
     svg: null,
     mark: "P",
+    defaultColor: "#8b5cf6",
     hint: "Twenty travelling teams means 60 to 100 cars. Check whether weekend parking needs a permit, and put this map in the week-of email — parking is the number one day-of question.",
   },
   {
@@ -47,42 +58,49 @@ export const SITE_ICONS: SiteIcon[] = [
     label: "Toilets",
     svg: null,
     mark: "WC",
+    defaultColor: "#34d399",
     hint: "Roughly one portable toilet per 75 people. Book about three weeks out, and check the delivery truck can actually reach the spot you picked.",
   },
   {
     kind: "trash",
     label: "Trash",
     svg: '<path d="M4 7h16M9.5 7V4.5h5V7M6.5 7l1 13h9l1-13"/>',
+    defaultColor: "#cbd5e1",
     hint: "Bins, bags, and somewhere for it all to end up. Leaving the site clean is what gets you the fields again next year.",
   },
   {
     kind: "food",
     label: "Food",
     svg: '<path d="M7 3v7M4.8 3v3.6a2.2 2.2 0 0 0 4.4 0V3M7 10v11M17.2 3c-1.6 2-2.2 4.2-2.2 6.3h4.4C19.4 7.2 18.8 5 17.2 3zM17.2 9.3V21"/>',
+    defaultColor: "#ffb020",
     hint: "Prepackaged team bundles are safer and less wasteful than shared bulk food. Any food vendor needs their own permit and insurance naming you.",
   },
   {
     kind: "medical",
     label: "First aid",
     svg: '<path d="M12 4v16M4 12h16"/>',
+    defaultColor: "#f472b6",
     hint: "First aid supplies, and the nearest AED. Also worth marking the route an ambulance would drive in, and which gate would need unlocking.",
   },
   {
     kind: "tent",
     label: "Tent",
     svg: '<path d="M12 3.5 2.5 20.5h19L12 3.5zM12 3.5v17"/>',
+    defaultColor: "#e8eaed",
     hint: "Every tent must be staked or weighted — including the ones teams bring themselves. Wind is a safety issue, not just a playing condition.",
   },
   {
     kind: "entrance",
     label: "Entrance",
     svg: '<path d="M14 3H5v18h9M18 12H9M15 8.5 18.5 12 15 15.5"/>',
+    defaultColor: "#ffffff",
     hint: "The way in. Note which gate is unlocked on the day and who has the key.",
   },
   {
     kind: "other",
     label: "Other",
     svg: '<circle cx="12" cy="12" r="8"/>',
+    defaultColor: "#ffffff",
     hint: "Anything else people need to find. Rename it to whatever it actually is.",
   },
 ];
@@ -114,24 +132,41 @@ export function iconSvg(kind: string, size = 16, color = "#08090b") {
  */
 export const PIN_COLORS = [
   { hex: "#ffffff", name: "White" },
+  { hex: "#cbd5e1", name: "Slate" },
   { hex: "#d4fe4f", name: "Lime" },
   { hex: "#4fc3ff", name: "Blue" },
-  { hex: "#ff5f45", name: "Red" },
-  { hex: "#ffb020", name: "Amber" },
-  { hex: "#8b5cf6", name: "Violet" },
   { hex: "#34d399", name: "Green" },
+  { hex: "#ffb020", name: "Amber" },
+  { hex: "#ff5f45", name: "Red" },
   { hex: "#f472b6", name: "Pink" },
+  { hex: "#8b5cf6", name: "Violet" },
 ];
 
-/** Black or white ink, whichever stays legible on the chosen fill. */
+/** The colour a pin should use when none has been chosen for it. */
+export function colorFor(kind: string, color?: string | null) {
+  return color || iconByKind(kind).defaultColor;
+}
+
+/**
+ * Black or white ink, whichever actually contrasts better with the fill.
+ *
+ * Computed as a real WCAG contrast ratio rather than a luminance threshold: a
+ * threshold gets mid-tones wrong in both directions, and picked white ink on
+ * saturated red and violet where black scores roughly twice as well. Applies to
+ * user-chosen colours too, so a pin stays legible whatever anyone picks.
+ */
 export function inkFor(hex: string) {
   const h = hex.replace("#", "");
-  const r = parseInt(h.slice(0, 2), 16);
-  const g = parseInt(h.slice(2, 4), 16);
-  const b = parseInt(h.slice(4, 6), 16);
-  // Perceived luminance, so mid-tones pick the readable ink rather than
-  // defaulting to black on a dark pin.
-  return (r * 299 + g * 587 + b * 114) / 1000 > 140 ? "#08090b" : "#ffffff";
+  const channels = [0, 2, 4]
+    .map((o) => parseInt(h.slice(o, o + 2), 16) / 255)
+    .map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+  const L = 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+
+  const contrast = (other: number) =>
+    (Math.max(L, other) + 0.05) / (Math.min(L, other) + 0.05);
+
+  const BLACK_L = 0.0043; // #08090b
+  return contrast(BLACK_L) >= contrast(1) ? "#08090b" : "#ffffff";
 }
 
 export function mapPin(
@@ -140,7 +175,7 @@ export function mapPin(
   active: boolean,
   color?: string | null,
 ) {
-  const bg = color || "#ffffff";
+  const bg = color || iconByKind(kind).defaultColor;
   const ring = active ? "#d4fe4f" : "#00000040";
   const ink = inkFor(bg);
   return `<div style="transform:translate(-50%,-100%);display:flex;flex-direction:column;

@@ -1,5 +1,5 @@
 import { fieldShape } from "./fieldGeometry";
-import { iconSvg } from "./siteIcons";
+import { colorFor, iconSvg } from "./siteIcons";
 
 /**
  * Render the saved field layout as a standalone SVG.
@@ -215,7 +215,7 @@ export function siteMapSvg(
     // Printed in ink, so a pale fill would vanish — keep the outline strong.
     parts.push(
       `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="11" ` +
-        `fill="${p.color ?? "#fff"}" stroke="#111" stroke-width="1.5"/>`,
+        `fill="${colorFor(p.kind, p.color)}" stroke="#111" stroke-width="1.5"/>`,
     );
     parts.push(
       `<g transform="translate(${(x - 7).toFixed(1)},${(y - 7).toFixed(1)})">` +
