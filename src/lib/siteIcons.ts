@@ -1,0 +1,108 @@
+/**
+ * Site-map marker kinds.
+ *
+ * Line icons and type marks, no emoji — they render consistently at any size,
+ * print legibly on the paper site map a volunteer actually carries, and don't
+ * shift between platforms.
+ */
+
+export type SiteIcon = {
+  kind: string;
+  label: string;
+  /** Inner SVG for a 24x24 stroke-based icon, or null when `mark` is used. */
+  svg: string | null;
+  /** Short type mark used instead of a glyph, e.g. "P" for parking. */
+  mark?: string;
+  hint: string;
+};
+
+export const SITE_ICONS: SiteIcon[] = [
+  {
+    kind: "water",
+    label: "Water",
+    svg: '<path d="M12 3s6 6.6 6 10.5a6 6 0 0 1-12 0C6 9.6 12 3 12 3z"/>',
+    hint: "One station per two fields, minimum. Refill on a schedule.",
+  },
+  {
+    kind: "trainer",
+    label: "Trainer",
+    svg: '<rect x="3.5" y="3.5" width="17" height="17" rx="3"/><path d="M12 8v8M8 12h8"/>',
+    hint: "Shaded, marked, with a radio channel printed on every clipboard.",
+  },
+  {
+    kind: "hq",
+    label: "HQ",
+    svg: '<path d="M5 21V3M5 3h12l-2.2 3.8L17 11H5"/>',
+    hint: "Central scoreboard, site map, check-in, lost property.",
+  },
+  {
+    kind: "parking",
+    label: "Parking",
+    svg: null,
+    mark: "P",
+    hint: "20 travelling teams is 60–100 vehicles. Confirm weekend permits.",
+  },
+  {
+    kind: "toilets",
+    label: "Toilets",
+    svg: null,
+    mark: "WC",
+    hint: "Roughly one unit per 75 people. Confirm the truck can reach the drop.",
+  },
+  {
+    kind: "trash",
+    label: "Trash",
+    svg: '<path d="M4 7h16M9.5 7V4.5h5V7M6.5 7l1 13h9l1-13"/>',
+    hint: "Bins, bags, and a dumpster arrangement. Sort as you go.",
+  },
+  {
+    kind: "food",
+    label: "Food",
+    svg: '<path d="M7 3v7M4.8 3v3.6a2.2 2.2 0 0 0 4.4 0V3M7 10v11M17.2 3c-1.6 2-2.2 4.2-2.2 6.3h4.4C19.4 7.2 18.8 5 17.2 3zM17.2 9.3V21"/>',
+    hint: "Prepackaged team bundles beat bulk food. Vendors need their own COI.",
+  },
+  {
+    kind: "medical",
+    label: "First aid",
+    svg: '<path d="M12 4v16M4 12h16"/>',
+    hint: "AED location, and the route an ambulance takes in.",
+  },
+  {
+    kind: "tent",
+    label: "Tent",
+    svg: '<path d="M12 3.5 2.5 20.5h19L12 3.5zM12 3.5v17"/>',
+    hint: "Stake or weight every tent, including the ones teams bring.",
+  },
+  {
+    kind: "entrance",
+    label: "Entrance",
+    svg: '<path d="M14 3H5v18h9M18 12H9M15 8.5 18.5 12 15 15.5"/>',
+    hint: "Which gate is unlocked, and who has the key.",
+  },
+  {
+    kind: "other",
+    label: "Other",
+    svg: '<circle cx="12" cy="12" r="8"/>',
+    hint: "Anything else volunteers need to find.",
+  },
+];
+
+export function iconByKind(kind: string) {
+  return SITE_ICONS.find((i) => i.kind === kind) ?? SITE_ICONS[SITE_ICONS.length - 1];
+}
+
+/** A complete <svg> string for a kind, for both the palette and map markers. */
+export function iconSvg(kind: string, size = 16, color = "#08090b") {
+  const icon = iconByKind(kind);
+  if (icon.svg) {
+    return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none"
+      stroke="${color}" stroke-width="2" stroke-linecap="round"
+      stroke-linejoin="round">${icon.svg}</svg>`;
+  }
+  const fontSize = icon.mark && icon.mark.length > 1 ? size * 0.5 : size * 0.72;
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24">
+    <text x="12" y="12" text-anchor="middle" dominant-baseline="central"
+      font-family="ui-monospace, monospace" font-weight="700"
+      font-size="${(fontSize / size) * 24}" fill="${color}">${icon.mark}</text>
+  </svg>`;
+}

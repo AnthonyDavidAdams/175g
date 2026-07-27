@@ -9,9 +9,10 @@ import {
   presetByKey,
   spacingWarnings,
 } from "@/lib/fieldGeometry";
+import { SITE_ICONS, iconByKind, iconSvg } from "@/lib/siteIcons";
 
 /**
- * Field placement on a real satellite image, at true scale.
+ * Field and site-map placement on real satellite imagery, at true scale.
  *
  * Fields are stored as centre + bearing + dimensions, so a field is always
  * exactly regulation size no matter how it is dragged or rotated — the map
@@ -39,16 +40,13 @@ type PointRow = {
   lng: number;
 };
 
-const POINT_KINDS = [
-  "water",
-  "trainer",
-  "hq",
-  "parking",
-  "toilets",
-  "trash",
-  "food",
-  "other",
-];
+/** What the next map click will do. */
+type Mode = { tool: "field" } | { tool: "marker"; kind: string };
+
+type Selection =
+  | { type: "field"; index: number }
+  | { type: "point"; index: number }
+  | null;
 
 export default function FieldMap({
   org,
@@ -72,9 +70,10 @@ export default function FieldMap({
 
   const [fields, setFields] = useState<FieldRow[]>(initialFields);
   const [points, setPoints] = useState<PointRow[]>(initialPoints);
-  const [selected, setSelected] = useState<number | null>(
-    initialFields.length ? 0 : null,
+  const [selected, setSelected] = useState<Selection>(
+    initialFields.length ? { type: "field", index: 0 } : null,
   );
+  const [mode, setMode] = useState<Mode>({ tool: "field" });
   const [status, setStatus] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [query, setQuery] = useState("");
@@ -82,6 +81,13 @@ export default function FieldMap({
     { label: string; lat: number; lng: number }[]
   >([]);
   const [searching, setSearching] = useState(false);
+
+  // The map click handler is registered once, so it reads the live mode from a
+  // ref rather than closing over a stale value.
+  const modeRef = useRef<Mode>(mode);
+  useEffect(() => {
+    modeRef.current = mode;
+  }, [mode]);
 
   // Leaflet touches `window`, so it can only load in the browser.
   useEffect(() => {
@@ -117,6 +123,29 @@ export default function FieldMap({
       setStatus("Search for your site, then click the map to place a field.");
 
       map.on("click", (e: L.LeafletMouseEvent) => {
+        const current = modeRef.current;
+
+        if (current.tool === "marker") {
+          const icon = iconByKind(current.kind);
+          setPoints((prev) => {
+            const next = [
+              ...prev,
+              {
+                kind: current.kind,
+                label: icon.label,
+                lat: e.latlng.lat,
+                lng: e.latlng.lng,
+              },
+            ];
+            setSelected({ type: "point", index: next.length - 1 });
+            return next;
+          });
+          // One click, one marker — drop back to the default tool so the next
+          // click doesn't scatter duplicates.
+          setMode({ tool: "field" });
+          return;
+        }
+
         setFields((prev) => {
           const preset = presetByKey("usau");
           const next = [
@@ -132,7 +161,7 @@ export default function FieldMap({
               endzoneM: preset.endzoneM,
             },
           ];
-          setSelected(next.length - 1);
+          setSelected({ type: "field", index: next.length - 1 });
           return next;
         });
       });
@@ -141,6 +170,12 @@ export default function FieldMap({
       cancelled = true;
     };
   }, [centerLat, centerLng]);
+
+  // Cursor communicates the armed tool.
+  useEffect(() => {
+    const el = mapEl.current?.querySelector(".leaflet-container") as HTMLElement | null;
+    if (el) el.style.cursor = mode.tool === "marker" ? "crosshair" : "";
+  }, [mode]);
 
   // Redraw whenever the layout changes.
   useEffect(() => {
@@ -151,7 +186,7 @@ export default function FieldMap({
 
     fields.forEach((f, i) => {
       const shape = fieldShape(f);
-      const active = i === selected;
+      const active = selected?.type === "field" && selected.index === i;
 
       leaflet
         .polygon(shape.outline, {
@@ -162,8 +197,9 @@ export default function FieldMap({
           fillOpacity: active ? 0.16 : 0.07,
         })
         .on("click", (e: L.LeafletMouseEvent) => {
+          if (modeRef.current.tool === "marker") return;
           leaflet.DomEvent.stop(e);
-          setSelected(i);
+          setSelected({ type: "field", index: i });
         })
         .addTo(layer);
 
@@ -191,7 +227,7 @@ export default function FieldMap({
             ">${f.name}</div>`,
           }),
         })
-        .on("dragstart", () => setSelected(i))
+        .on("dragstart", () => setSelected({ type: "field", index: i }))
         .on("drag", (e: L.LeafletEvent) => {
           const ll = (e.target as L.Marker).getLatLng();
           setFields((prev) =>
@@ -224,8 +260,7 @@ export default function FieldMap({
               html: `<div title="Drag to rotate" style="
                 transform:translate(-50%,-50%);
                 width:16px;height:16px;border-radius:50%;
-                background:#d4fe4f;border:2px solid #08090b;
-                cursor:grab;
+                background:#d4fe4f;border:2px solid #08090b;cursor:grab;
               "></div>`,
             }),
           })
@@ -244,6 +279,7 @@ export default function FieldMap({
     });
 
     points.forEach((p, i) => {
+      const active = selected?.type === "point" && selected.index === i;
       leaflet
         .marker([p.lat, p.lng], {
           draggable: true,
@@ -251,12 +287,19 @@ export default function FieldMap({
             className: "",
             html: `<div style="
               transform:translate(-50%,-50%);
-              font:500 11px ui-monospace,monospace;
-              color:#08090b;background:#ffb020;
-              padding:2px 6px;border-radius:4px;white-space:nowrap;
-            ">${p.label}</div>`,
+              display:flex;align-items:center;gap:5px;
+              background:${active ? "#d4fe4f" : "#ffb020"};
+              border:${active ? "2px solid #08090b" : "1px solid #00000033"};
+              padding:3px 7px;border-radius:5px;white-space:nowrap;
+              font:600 11px ui-monospace,monospace;color:#08090b;cursor:pointer;
+            ">${iconSvg(p.kind, 14)}<span>${p.label}</span></div>`,
           }),
         })
+        .on("click", (e: L.LeafletMouseEvent) => {
+          leaflet.DomEvent.stop(e);
+          setSelected({ type: "point", index: i });
+        })
+        .on("dragstart", () => setSelected({ type: "point", index: i }))
         .on("drag", (e: L.LeafletEvent) => {
           const ll = (e.target as L.Marker).getLatLng();
           setPoints((prev) =>
@@ -267,7 +310,26 @@ export default function FieldMap({
     });
   }, [fields, points, selected]);
 
-  function patch(i: number, p: Partial<FieldRow>) {
+  // Delete the selection with the keyboard, as any map editor should.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== "Delete" && e.key !== "Backspace") return;
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (!selected) return;
+      e.preventDefault();
+      if (selected.type === "field") {
+        setFields((prev) => prev.filter((_, j) => j !== selected.index));
+      } else {
+        setPoints((prev) => prev.filter((_, j) => j !== selected.index));
+      }
+      setSelected(null);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selected]);
+
+  function patchField(i: number, p: Partial<FieldRow>) {
     setFields((prev) => prev.map((x, j) => (j === i ? { ...x, ...p } : x)));
   }
 
@@ -281,11 +343,18 @@ export default function FieldMap({
     });
     const data = await res.json().catch(() => ({}));
     setSaving(false);
-    setStatus(res.ok ? `Saved ${data.fields} fields.` : (data.error ?? "Save failed."));
+    setStatus(
+      res.ok
+        ? `Saved ${data.fields} field${data.fields === 1 ? "" : "s"} and ${points.length} marker${points.length === 1 ? "" : "s"}.`
+        : (data.error ?? "Save failed."),
+    );
   }
 
   const warnings = spacingWarnings(fields);
-  const active = selected !== null ? fields[selected] : null;
+  const activeField =
+    selected?.type === "field" ? fields[selected.index] : null;
+  const activePoint =
+    selected?.type === "point" ? points[selected.index] : null;
 
   return (
     <div className="mt-8">
@@ -308,7 +377,11 @@ export default function FieldMap({
           placeholder="Search an address, park, or campus — e.g. Swope Park, Kansas City"
           className="field"
         />
-        <button type="submit" disabled={searching} className="btn btn-ghost disabled:opacity-40">
+        <button
+          type="submit"
+          disabled={searching}
+          className="btn btn-ghost disabled:opacity-40"
+        >
           {searching ? "…" : "Find"}
         </button>
       </form>
@@ -333,6 +406,50 @@ export default function FieldMap({
         </ul>
       )}
 
+      {/* Palette */}
+      <div className="panel mb-3 flex flex-wrap items-center gap-1.5 p-2">
+        <button
+          onClick={() => setMode({ tool: "field" })}
+          className={`btn !gap-1.5 !rounded-md !px-2.5 !py-1.5 !text-xs ${
+            mode.tool === "field" ? "btn-primary" : "btn-ghost"
+          }`}
+          title="Click the map to place a field"
+        >
+          Field
+        </button>
+        <span className="mx-1 h-5 w-px bg-[var(--color-line-strong)]" />
+        {SITE_ICONS.map((icon) => {
+          const armed = mode.tool === "marker" && mode.kind === icon.kind;
+          return (
+            <button
+              key={icon.kind}
+              onClick={() =>
+                setMode(armed ? { tool: "field" } : { tool: "marker", kind: icon.kind })
+              }
+              title={`${icon.label} — ${icon.hint}`}
+              className={`btn !gap-1.5 !rounded-md !px-2.5 !py-1.5 !text-xs ${
+                armed ? "btn-primary" : "btn-ghost"
+              }`}
+            >
+              <span
+                className="inline-flex"
+                dangerouslySetInnerHTML={{
+                  __html: iconSvg(icon.kind, 14, armed ? "#0a0c05" : "currentColor"),
+                }}
+              />
+              {icon.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {mode.tool === "marker" && (
+        <p className="mono mb-2 normal-case tracking-normal text-[var(--color-signal)]">
+          Click the map to drop {iconByKind(mode.kind).label} — or press the button
+          again to cancel
+        </p>
+      )}
+
       <div
         ref={mapEl}
         className="h-[32rem] w-full rounded-lg border border-[var(--color-line)]"
@@ -350,28 +467,8 @@ export default function FieldMap({
           }}
           className="btn btn-ghost"
         >
-          Clear
+          Clear all
         </button>
-        <select
-          className="field !w-auto"
-          value=""
-          onChange={(e) => {
-            if (!e.target.value || !mapRef.current) return;
-            const c = mapRef.current.getCenter();
-            setPoints((p) => [
-              ...p,
-              { kind: e.target.value, label: e.target.value, lat: c.lat, lng: c.lng },
-            ]);
-            e.target.value = "";
-          }}
-        >
-          <option value="">Add a marker…</option>
-          {POINT_KINDS.map((k) => (
-            <option key={k} value={k}>
-              {k}
-            </option>
-          ))}
-        </select>
         {status && <span className="mono normal-case tracking-normal">{status}</span>}
       </div>
 
@@ -386,25 +483,25 @@ export default function FieldMap({
         </div>
       )}
 
-      {active && selected !== null && (
+      {activeField && selected?.type === "field" && (
         <div className="panel mt-4 p-5">
           <p className="mono">Selected field</p>
           <div className="mt-3 grid gap-4 sm:grid-cols-2">
             <label className="block">
               <span className="mono">Name</span>
               <input
-                value={active.name}
-                onChange={(e) => patch(selected, { name: e.target.value })}
+                value={activeField.name}
+                onChange={(e) => patchField(selected.index, { name: e.target.value })}
                 className="field mt-2"
               />
             </label>
             <label className="block">
               <span className="mono">Size</span>
               <select
-                value={active.preset}
+                value={activeField.preset}
                 onChange={(e) => {
                   const p = presetByKey(e.target.value);
-                  patch(selected, {
+                  patchField(selected.index, {
                     preset: p.key,
                     lengthM: p.lengthM,
                     widthM: p.widthM,
@@ -422,14 +519,16 @@ export default function FieldMap({
             </label>
             <label className="block sm:col-span-2">
               <span className="mono">
-                Rotation — {active.bearing}° · drag the dot on the map to spin it
+                Rotation — {activeField.bearing}° · drag the dot on the map to spin it
               </span>
               <input
                 type="range"
                 min={0}
                 max={359}
-                value={active.bearing}
-                onChange={(e) => patch(selected, { bearing: Number(e.target.value) })}
+                value={activeField.bearing}
+                onChange={(e) =>
+                  patchField(selected.index, { bearing: Number(e.target.value) })
+                }
                 className="mt-2 w-full"
               />
             </label>
@@ -437,7 +536,7 @@ export default function FieldMap({
           <div className="mt-4 flex flex-wrap items-center gap-3">
             <button
               onClick={() => {
-                setFields((prev) => prev.filter((_, j) => j !== selected));
+                setFields((prev) => prev.filter((_, j) => j !== selected.index));
                 setSelected(null);
               }}
               className="btn btn-ghost !py-1 !text-xs"
@@ -445,18 +544,74 @@ export default function FieldMap({
               Delete field
             </button>
             <span className="mono normal-case tracking-normal">
-              {active.lengthM}×{active.widthM}m, {active.endzoneM}m end zones ·{" "}
-              {presetByKey(active.preset).note}
+              {activeField.lengthM}×{activeField.widthM}m, {activeField.endzoneM}m end
+              zones · {presetByKey(activeField.preset).note}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {activePoint && selected?.type === "point" && (
+        <div className="panel mt-4 p-5">
+          <p className="mono">Selected marker</p>
+          <div className="mt-3 grid gap-4 sm:grid-cols-2">
+            <label className="block">
+              <span className="mono">Label</span>
+              <input
+                value={activePoint.label}
+                onChange={(e) =>
+                  setPoints((prev) =>
+                    prev.map((x, j) =>
+                      j === selected.index ? { ...x, label: e.target.value } : x,
+                    ),
+                  )
+                }
+                className="field mt-2"
+              />
+            </label>
+            <label className="block">
+              <span className="mono">Kind</span>
+              <select
+                value={activePoint.kind}
+                onChange={(e) =>
+                  setPoints((prev) =>
+                    prev.map((x, j) =>
+                      j === selected.index ? { ...x, kind: e.target.value } : x,
+                    ),
+                  )
+                }
+                className="field mt-2"
+              >
+                {SITE_ICONS.map((i) => (
+                  <option key={i.kind} value={i.kind}>
+                    {i.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <button
+              onClick={() => {
+                setPoints((prev) => prev.filter((_, j) => j !== selected.index));
+                setSelected(null);
+              }}
+              className="btn btn-ghost !py-1 !text-xs"
+            >
+              Delete marker
+            </button>
+            <span className="mono normal-case tracking-normal">
+              {iconByKind(activePoint.kind).hint}
             </span>
           </div>
         </div>
       )}
 
       <p className="mono mt-6 normal-case tracking-normal">
-        Search a site · click to place · drag the label to move · drag the dot to
-        rotate. Fields are drawn at true size — 100×37m is 91% the length of an
-        American football field, so they should look large. Check against the scale
-        bar in the corner.
+        Pick a tool, then click the map · drag anything to move it · drag the dot to
+        rotate a field · Delete removes the selection. Fields are drawn at true size —
+        100×37m is 91% the length of an American football field, so they should look
+        large. Check against the scale bar.
       </p>
     </div>
   );
