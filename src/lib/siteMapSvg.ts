@@ -20,7 +20,13 @@ type Field = {
   endzoneM: number;
 };
 
-type Point = { kind: string; label: string; lat: number; lng: number };
+type Point = {
+  kind: string;
+  label: string;
+  lat: number;
+  lng: number;
+  color?: string | null;
+};
 
 const EARTH_R = 6378137;
 
@@ -103,9 +109,10 @@ export function siteMapSvg(
 
   for (const p of points) {
     const [x, y] = place(p.lat, p.lng);
+    // Printed in ink, so a pale fill would vanish — keep the outline strong.
     parts.push(
-      `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="11" fill="#fff" ` +
-        `stroke="#111" stroke-width="1.5"/>`,
+      `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="11" ` +
+        `fill="${p.color ?? "#fff"}" stroke="#111" stroke-width="1.5"/>`,
     );
     parts.push(
       `<g transform="translate(${(x - 7).toFixed(1)},${(y - 7).toFixed(1)})">` +

@@ -112,23 +112,50 @@ export function iconSvg(kind: string, size = 16, color = "#08090b") {
  * label captioned beneath it. Reads as an icon on the map rather than a text
  * chip, and stays recognisable when the site map is printed in greyscale.
  */
-export function mapPin(kind: string, label: string, active: boolean) {
-  const bg = active ? "#d4fe4f" : "#ffffff";
-  const ring = active ? "#08090b" : "#00000040";
-  const ink = "#08090b";
+export const PIN_COLORS = [
+  { hex: "#ffffff", name: "White" },
+  { hex: "#d4fe4f", name: "Lime" },
+  { hex: "#4fc3ff", name: "Blue" },
+  { hex: "#ff5f45", name: "Red" },
+  { hex: "#ffb020", name: "Amber" },
+  { hex: "#8b5cf6", name: "Violet" },
+  { hex: "#34d399", name: "Green" },
+  { hex: "#f472b6", name: "Pink" },
+];
+
+/** Black or white ink, whichever stays legible on the chosen fill. */
+export function inkFor(hex: string) {
+  const h = hex.replace("#", "");
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  // Perceived luminance, so mid-tones pick the readable ink rather than
+  // defaulting to black on a dark pin.
+  return (r * 299 + g * 587 + b * 114) / 1000 > 140 ? "#08090b" : "#ffffff";
+}
+
+export function mapPin(
+  kind: string,
+  label: string,
+  active: boolean,
+  color?: string | null,
+) {
+  const bg = color || "#ffffff";
+  const ring = active ? "#d4fe4f" : "#00000040";
+  const ink = inkFor(bg);
   return `<div style="transform:translate(-50%,-100%);display:flex;flex-direction:column;
     align-items:center;gap:2px;cursor:pointer;pointer-events:auto;">
     <div style="display:flex;align-items:center;justify-content:center;
       width:30px;height:30px;border-radius:50% 50% 50% 4px;
       transform:rotate(-45deg);background:${bg};
-      border:2px solid ${ring};
+      border:${active ? "3px" : "2px"} solid ${ring};
       box-shadow:0 2px 6px rgba(0,0,0,.45);">
       <div style="transform:rotate(45deg);display:flex;">
         ${iconSvg(kind, 16, ink)}
       </div>
     </div>
-    <div style="font:600 10px ui-monospace,monospace;color:#08090b;
-      background:${active ? "#d4fe4f" : "#ffffffdd"};padding:1px 5px;border-radius:3px;
+    <div style="font:600 10px ui-monospace,monospace;color:${ink};
+      background:${bg};padding:1px 5px;border-radius:3px;opacity:.95;
       white-space:nowrap;">${label}</div>
   </div>`;
 }

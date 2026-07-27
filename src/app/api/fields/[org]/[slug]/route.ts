@@ -32,6 +32,7 @@ const Body = z.discriminatedUnion("action", [
           label: z.string().min(1),
           lat: z.number(),
           lng: z.number(),
+          color: z.string().nullable().optional(),
         }),
       )
       .optional(),
@@ -95,6 +96,7 @@ export async function POST(
         label: p.label,
         lat: String(p.lat),
         lng: String(p.lng),
+        color: p.color ?? null,
       })
       .run();
   }

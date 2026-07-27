@@ -9,7 +9,13 @@ import {
   presetByKey,
   spacingWarnings,
 } from "@/lib/fieldGeometry";
-import { SITE_ICONS, iconByKind, iconSvg, mapPin } from "@/lib/siteIcons";
+import {
+  PIN_COLORS,
+  SITE_ICONS,
+  iconByKind,
+  iconSvg,
+  mapPin,
+} from "@/lib/siteIcons";
 
 /**
  * Field and site-map placement on real satellite imagery, at true scale.
@@ -38,6 +44,7 @@ type PointRow = {
   label: string;
   lat: number;
   lng: number;
+  color?: string | null;
 };
 
 /** What the next map click will do. */
@@ -89,6 +96,42 @@ export default function FieldMap({
     modeRef.current = mode;
   }, [mode]);
 
+  // While a drag is in flight we must NOT rebuild the Leaflet layers: clearing
+  // them destroys the very element under the pointer, which ends the drag after
+  // a single pixel. Instead the drag mutates the existing layers directly and
+  // commits to React state once, on release.
+  const draggingRef = useRef(false);
+  const fieldLayersRef = useRef<
+    Map<
+      number,
+      {
+        poly: L.Polygon;
+        endzones: L.Polyline[];
+        label: L.Marker;
+        handle?: L.Marker;
+        spoke?: L.Polyline;
+      }
+    >
+  >(new Map());
+
+  /** Move a field's drawn layers without touching React state. */
+  function repaintField(i: number, f: FieldRow) {
+    const refs = fieldLayersRef.current.get(i);
+    if (!refs) return;
+    const shape = fieldShape(f);
+    refs.poly.setLatLngs(shape.outline);
+    refs.endzones.forEach((l, k) => l.setLatLngs(shape.endzoneLines[k]));
+    refs.label.setLatLng(shape.center);
+    if (refs.handle && refs.spoke) {
+      const nose: [number, number] = [
+        (shape.outline[0][0] + shape.outline[1][0]) / 2,
+        (shape.outline[0][1] + shape.outline[1][1]) / 2,
+      ];
+      refs.handle.setLatLng(nose);
+      refs.spoke.setLatLngs([shape.center, nose]);
+    }
+  }
+
   // Leaflet touches `window`, so it can only load in the browser.
   useEffect(() => {
     let cancelled = false;
@@ -135,6 +178,7 @@ export default function FieldMap({
                 label: icon.label,
                 lat: e.latlng.lat,
                 lng: e.latlng.lng,
+                color: "#ffffff",
               },
             ];
             setSelected({ type: "point", index: next.length - 1 });
@@ -177,18 +221,19 @@ export default function FieldMap({
     if (el) el.style.cursor = mode.tool === "marker" ? "crosshair" : "";
   }, [mode]);
 
-  // Redraw whenever the layout changes.
+  // Redraw whenever the layout changes — except mid-drag, see draggingRef.
   useEffect(() => {
     const leaflet = leafletRef.current;
     const layer = layerRef.current;
-    if (!leaflet || !layer) return;
+    if (!leaflet || !layer || draggingRef.current) return;
     layer.clearLayers();
+    fieldLayersRef.current.clear();
 
     fields.forEach((f, i) => {
       const shape = fieldShape(f);
       const active = selected?.type === "field" && selected.index === i;
 
-      leaflet
+      const poly = leaflet
         .polygon(shape.outline, {
           color: active ? "#d4fe4f" : "#ffffff",
           weight: active ? 3 : 2,
@@ -203,7 +248,7 @@ export default function FieldMap({
         })
         // Drag anywhere on the field, not just the little label. Leaflet
         // polygons aren't draggable, so pan the shape by hand: freeze the map,
-        // follow the pointer, restore on release.
+        // move the layers directly, and commit once on release.
         .on("mousedown", (e: L.LeafletMouseEvent) => {
           if (modeRef.current.tool === "marker") return;
           const map = mapRef.current;
@@ -213,32 +258,31 @@ export default function FieldMap({
 
           const start = e.latlng;
           const origin = { lat: f.centerLat, lng: f.centerLng };
+          let latest = { ...f };
+          draggingRef.current = true;
           map.dragging.disable();
 
           const onMove = (ev: L.LeafletMouseEvent) => {
-            setFields((prev) =>
-              prev.map((x, j) =>
-                j === i
-                  ? {
-                      ...x,
-                      centerLat: origin.lat + (ev.latlng.lat - start.lat),
-                      centerLng: origin.lng + (ev.latlng.lng - start.lng),
-                    }
-                  : x,
-              ),
-            );
+            latest = {
+              ...latest,
+              centerLat: origin.lat + (ev.latlng.lat - start.lat),
+              centerLng: origin.lng + (ev.latlng.lng - start.lng),
+            };
+            repaintField(i, latest);
           };
           const onUp = () => {
             map.off("mousemove", onMove);
             map.off("mouseup", onUp);
             map.dragging.enable();
+            draggingRef.current = false;
+            setFields((prev) => prev.map((x, j) => (j === i ? latest : x)));
           };
           map.on("mousemove", onMove);
           map.on("mouseup", onUp);
         })
         .addTo(layer);
 
-      for (const line of shape.endzoneLines) {
+      const endzones = shape.endzoneLines.map((line) =>
         leaflet
           .polyline(line, {
             color: active ? "#d4fe4f" : "#ffffff",
@@ -246,10 +290,10 @@ export default function FieldMap({
             opacity: 0.8,
             dashArray: "5 5",
           })
-          .addTo(layer);
-      }
+          .addTo(layer),
+      );
 
-      leaflet
+      const label = leaflet
         .marker(shape.center, {
           draggable: true,
           icon: leaflet.divIcon({
@@ -258,13 +302,21 @@ export default function FieldMap({
               transform:translate(-50%,-50%);
               font:600 12px ui-monospace,monospace;
               color:#0a0c05;background:${active ? "#d4fe4f" : "#ffffffcc"};
-              padding:2px 7px;border-radius:4px;white-space:nowrap;
+              padding:2px 7px;border-radius:4px;white-space:nowrap;cursor:grab;
             ">${f.name}</div>`,
           }),
         })
-        .on("dragstart", () => setSelected({ type: "field", index: i }))
+        .on("dragstart", () => {
+          draggingRef.current = true;
+          setSelected({ type: "field", index: i });
+        })
         .on("drag", (e: L.LeafletEvent) => {
           const ll = (e.target as L.Marker).getLatLng();
+          repaintField(i, { ...f, centerLat: ll.lat, centerLng: ll.lng });
+        })
+        .on("dragend", (e: L.LeafletEvent) => {
+          const ll = (e.target as L.Marker).getLatLng();
+          draggingRef.current = false;
           setFields((prev) =>
             prev.map((x, j) =>
               j === i ? { ...x, centerLat: ll.lat, centerLng: ll.lng } : x,
@@ -273,13 +325,21 @@ export default function FieldMap({
         })
         .addTo(layer);
 
+      const refs: {
+        poly: L.Polygon;
+        endzones: L.Polyline[];
+        label: L.Marker;
+        handle?: L.Marker;
+        spoke?: L.Polyline;
+      } = { poly, endzones, label };
+
       // Rotation handle: drag the nose of the field to spin it in place.
       if (active) {
         const nose: [number, number] = [
           (shape.outline[0][0] + shape.outline[1][0]) / 2,
           (shape.outline[0][1] + shape.outline[1][1]) / 2,
         ];
-        leaflet
+        refs.spoke = leaflet
           .polyline([shape.center, nose], {
             color: "#d4fe4f",
             weight: 1,
@@ -287,30 +347,38 @@ export default function FieldMap({
             dashArray: "3 4",
           })
           .addTo(layer);
-        leaflet
+        refs.handle = leaflet
           .marker(nose, {
             draggable: true,
             icon: leaflet.divIcon({
               className: "",
               html: `<div title="Drag to rotate" style="
                 transform:translate(-50%,-50%);
-                width:16px;height:16px;border-radius:50%;
+                width:18px;height:18px;border-radius:50%;
                 background:#d4fe4f;border:2px solid #08090b;cursor:grab;
               "></div>`,
             }),
           })
+          .on("dragstart", () => {
+            draggingRef.current = true;
+          })
           .on("drag", (e: L.LeafletEvent) => {
             const ll = (e.target as L.Marker).getLatLng();
-            const deg = bearingBetween(
-              [f.centerLat, f.centerLng],
-              [ll.lat, ll.lng],
-            );
+            const deg = bearingBetween([f.centerLat, f.centerLng], [ll.lat, ll.lng]);
+            repaintField(i, { ...f, bearing: Math.round(deg) });
+          })
+          .on("dragend", (e: L.LeafletEvent) => {
+            const ll = (e.target as L.Marker).getLatLng();
+            const deg = bearingBetween([f.centerLat, f.centerLng], [ll.lat, ll.lng]);
+            draggingRef.current = false;
             setFields((prev) =>
               prev.map((x, j) => (j === i ? { ...x, bearing: Math.round(deg) } : x)),
             );
           })
           .addTo(layer);
       }
+
+      fieldLayersRef.current.set(i, refs);
     });
 
     points.forEach((p, i) => {
@@ -321,16 +389,20 @@ export default function FieldMap({
           icon: leaflet.divIcon({
             className: "",
             iconSize: [0, 0],
-            html: mapPin(p.kind, p.label, active),
+            html: mapPin(p.kind, p.label, active, p.color),
           }),
         })
         .on("click", (e: L.LeafletMouseEvent) => {
           leaflet.DomEvent.stop(e);
           setSelected({ type: "point", index: i });
         })
-        .on("dragstart", () => setSelected({ type: "point", index: i }))
-        .on("drag", (e: L.LeafletEvent) => {
+        .on("dragstart", () => {
+          draggingRef.current = true;
+          setSelected({ type: "point", index: i });
+        })
+        .on("dragend", (e: L.LeafletEvent) => {
           const ll = (e.target as L.Marker).getLatLng();
+          draggingRef.current = false;
           setPoints((prev) =>
             prev.map((x, j) => (j === i ? { ...x, lat: ll.lat, lng: ll.lng } : x)),
           );
@@ -717,6 +789,30 @@ export default function FieldMap({
                 ))}
               </select>
             </label>
+          </div>
+          <div className="mt-4">
+            <span className="mono">Colour</span>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {PIN_COLORS.map((c) => (
+                <button
+                  key={c.hex}
+                  title={c.name}
+                  onClick={() =>
+                    setPoints((prev) =>
+                      prev.map((x, j) =>
+                        j === selected.index ? { ...x, color: c.hex } : x,
+                      ),
+                    )
+                  }
+                  style={{ background: c.hex }}
+                  className={`h-7 w-7 rounded-full border-2 ${
+                    (activePoint.color ?? "#ffffff") === c.hex
+                      ? "border-[var(--color-signal)]"
+                      : "border-transparent"
+                  }`}
+                />
+              ))}
+            </div>
           </div>
           <div className="mt-4 flex flex-wrap items-center gap-3">
             <button

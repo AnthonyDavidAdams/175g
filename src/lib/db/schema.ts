@@ -406,6 +406,8 @@ export const sitePoints = sqliteTable(
     label: text("label").notNull(),
     lat: text("lat").notNull(),
     lng: text("lng").notNull(),
+    /** Hex fill for the pin, so a TD can colour-code by zone or by day. */
+    color: text("color"),
     notes: text("notes"),
     createdAt: integer("created_at").notNull().default(now),
   },

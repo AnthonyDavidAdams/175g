@@ -73,6 +73,7 @@ export default async function HandoutPage({ params }: Params) {
       label: p.label,
       lat: Number(p.lat),
       lng: Number(p.lng),
+      color: p.color,
     })),
   );
 
