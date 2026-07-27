@@ -5,6 +5,7 @@ import { db, schema } from "../db";
 import { advanceTournament } from "../advance";
 import { checkCapacity, expand, type CustomFormatSpec } from "../customFormat";
 import { buildFormat, layOutSchedule } from "../formats";
+import { allocate, fieldCountWarnings } from "../multiDivision";
 import { buildTimeline } from "../timeline";
 import { formatDateRange } from "../tournament";
 import {
@@ -249,6 +250,72 @@ export const TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "schedule_divisions",
+    description:
+      "Schedule TWO OR MORE divisions that share the same fields — e.g. a mixed " +
+      "and a women's division on four fields. Choose how they share:\n\n" +
+      "  alternate — divisions take turns; each uses every field for a round, " +
+      "then hands over. Fewer fields needed, longer day.\n" +
+      "  split — divisions play concurrently on dedicated fields. Shorter day, " +
+      "but each division has fewer fields.\n\n" +
+      "Neither is better in the abstract: alternate suits a site short of " +
+      "fields, split suits a site short of daylight. Report the trade-off and " +
+      "let the TD choose. Replaces the whole schedule.",
+    input_schema: {
+      type: "object",
+      properties: {
+        mode: { type: "string", description: "alternate | split" },
+        divisions: {
+          type: "array",
+          description:
+            "Which divisions to schedule. Omit to use every division that has " +
+            "accepted teams.",
+          items: { type: "string" },
+        },
+        fields: { type: "number" },
+        days: { type: "number" },
+        roundsPerDay: { type: "number" },
+        roundMinutes: { type: "number" },
+        startTime: { type: "string", description: "HH:MM" },
+      },
+      required: ["mode"],
+    },
+  },
+  {
+    name: "withdraw_team",
+    description:
+      "Handle a team dropping out. Call WITHOUT confirm first: it reports the " +
+      "damage — which games are affected, whether pools are now uneven, whether " +
+      "the format still works — and lists the options. Present those to the TD, " +
+      "get a decision, then call again with confirm true and the chosen action.\n\n" +
+      "This is the tool for 'Team B just dropped, what do we do?'",
+    input_schema: {
+      type: "object",
+      properties: {
+        teamName: { type: "string" },
+        confirm: {
+          type: "boolean",
+          description: "false or omitted = report impact only, change nothing",
+        },
+        replacementTeam: {
+          type: "string",
+          description:
+            "Name of a waitlisted team to promote into the vacated slot, " +
+            "inheriting its seed and pool. The cleanest fix when available.",
+        },
+        action: {
+          type: "string",
+          description:
+            "forfeit — keep the schedule, mark their remaining games forfeited " +
+            "(use when it is too late to reshuffle, e.g. mid-tournament); " +
+            "remove — delete their unplayed games and leave the pool short; " +
+            "regenerate — rebuild the schedule for the reduced field.",
+        },
+      },
+      required: ["teamName"],
+    },
+  },
+  {
     name: "manage_waiver",
     description:
       "Create a waiver from a template, or rewrite an existing one. Templates: " +
@@ -328,6 +395,10 @@ export async function runTool(
       return draftOutreach(input, ctx);
     case "add_sponsor":
       return addSponsor(input, ctx);
+    case "schedule_divisions":
+      return scheduleDivisions(input, ctx);
+    case "withdraw_team":
+      return withdrawTeam(input, ctx);
     case "manage_waiver":
       return manageWaiver(input, ctx);
     case "post_announcement":
@@ -792,6 +863,344 @@ function pairSwissRound(input: Record<string, any>, ctx: Ctx) {
     .join("\n");
 }
 
+
+function scheduleDivisions(input: Record<string, any>, ctx: Ctx) {
+  const t = db
+    .select()
+    .from(schema.tournaments)
+    .where(eq(schema.tournaments.id, ctx.tournamentId))
+    .get();
+  if (!t) return "Tournament not found.";
+
+  const accepted = db
+    .select()
+    .from(schema.teams)
+    .where(
+      and(
+        eq(schema.teams.tournamentId, ctx.tournamentId),
+        eq(schema.teams.status, "accepted"),
+      ),
+    )
+    .all();
+
+  const byDivision = new Map<string, typeof accepted>();
+  for (const team of accepted) {
+    const d = team.division || t.division || "Open";
+    byDivision.set(d, [...(byDivision.get(d) ?? []), team]);
+  }
+
+  const wanted: string[] = input.divisions?.length
+    ? input.divisions
+    : [...byDivision.keys()];
+  const divisions = wanted.filter((d) => (byDivision.get(d)?.length ?? 0) >= 3);
+
+  if (divisions.length < 2) {
+    return (
+      `Only ${divisions.length} division has 3+ accepted teams ` +
+      `(${[...byDivision.entries()].map(([d, x]) => `${d}: ${x.length}`).join(", ") || "none"}). ` +
+      `Use generate_schedule for a single-division event.`
+    );
+  }
+
+  const mode = input.mode === "split" ? "split" : "alternate";
+  const fields = input.fields ?? t.fieldCount ?? 4;
+  const days = input.days ?? 2;
+  const roundsPerDay = input.roundsPerDay ?? 4;
+  const roundMinutes = input.roundMinutes ?? 120;
+  const startTime = input.startTime ?? "09:00";
+
+  // Build each division's own format, then hand the lot to the allocator.
+  const plans = [];
+  const perDivisionNotes: string[] = [];
+  for (const d of divisions) {
+    const teams = (byDivision.get(d) ?? []).sort(
+      (a, b) => (a.seed ?? 999) - (b.seed ?? 999),
+    );
+    const fmt = buildFormat({
+      teams: teams.length,
+      days,
+      fields,
+      roundMinutes,
+      hoursPerDay: (roundsPerDay * roundMinutes) / 60,
+      gameTo: 15,
+    });
+    const laid = layOutSchedule(fmt, {
+      startTime,
+      roundMinutes,
+      fields,
+      roundsPerDay,
+      days,
+      teamNames: teams.map((x) => x.name),
+    });
+    plans.push({
+      division: d,
+      games: laid.map((g) => ({
+        gameId: `${d.slice(0, 2).toUpperCase()}-${g.gameId}`,
+        round: g.round,
+        stage: g.stage,
+        pool: `${d} ${g.pool}`,
+        home: g.homeTeam,
+        away: g.awayTeam,
+      })),
+    });
+    perDivisionNotes.push(
+      `  ${d}: ${teams.length} teams, ${laid.length} games, ` +
+        `${fmt.gamesGuaranteed} guaranteed`,
+    );
+
+    // Record pool assignments for this division's teams.
+    for (const [poolName, seeds] of Object.entries(fmt.pools)) {
+      for (const seed of seeds) {
+        const team = teams[seed - 1];
+        if (team) {
+          db.update(schema.teams)
+            .set({ pool: `${d} ${poolName}`, seed })
+            .where(eq(schema.teams.id, team.id))
+            .run();
+        }
+      }
+    }
+  }
+
+  const result = allocate(plans, {
+    mode,
+    fields,
+    roundsPerDay,
+    roundMinutes,
+    startTime,
+    days,
+  });
+
+  const nameToId = new Map(accepted.map((x) => [x.name, x.id]));
+
+  db.delete(schema.games)
+    .where(eq(schema.games.tournamentId, ctx.tournamentId))
+    .run();
+
+  for (const g of result.games) {
+    const homeId = nameToId.get(g.home) ?? null;
+    const awayId = nameToId.get(g.away) ?? null;
+    db.insert(schema.games)
+      .values({
+        id: nanoid(),
+        tournamentId: ctx.tournamentId,
+        gameCode: g.gameId,
+        day: g.day,
+        round: g.globalRound,
+        startTime: g.startTime,
+        field: String(g.field),
+        stage: g.stage,
+        pool: g.pool,
+        division: g.division,
+        homeTeamId: homeId,
+        awayTeamId: awayId,
+        homeLabel: homeId ? null : g.home,
+        awayLabel: awayId ? null : g.away,
+      })
+      .run();
+  }
+
+  db.update(schema.tournaments)
+    .set({ divisionMode: mode, division: "multiple" })
+    .where(eq(schema.tournaments.id, ctx.tournamentId))
+    .run();
+
+  advanceTournament(ctx.tournamentId);
+
+  return [
+    `Scheduled ${divisions.length} divisions in ${mode} mode on ${fields} fields.`,
+    ...perDivisionNotes,
+    "",
+    result.summary,
+    ...(result.problems.length
+      ? ["", "Warnings:", ...result.problems.map((p) => `  - ${p}`)]
+      : []),
+    "",
+    mode === "alternate"
+      ? "Switch to split mode if the day runs too long."
+      : "Switch to alternate mode if a division needs more fields at once.",
+  ].join("\n");
+}
+
+function withdrawTeam(input: Record<string, any>, ctx: Ctx) {
+  const team = db
+    .select()
+    .from(schema.teams)
+    .where(
+      and(
+        eq(schema.teams.tournamentId, ctx.tournamentId),
+        eq(schema.teams.name, input.teamName),
+      ),
+    )
+    .get();
+  if (!team) return `No team called "${input.teamName}" in this tournament.`;
+
+  const allGames = db
+    .select()
+    .from(schema.games)
+    .where(eq(schema.games.tournamentId, ctx.tournamentId))
+    .all();
+  const theirs = allGames.filter(
+    (g) => g.homeTeamId === team.id || g.awayTeamId === team.id,
+  );
+  const played = theirs.filter((g) => g.status === "final");
+  const unplayed = theirs.filter((g) => g.status !== "final");
+
+  const poolmates = db
+    .select()
+    .from(schema.teams)
+    .where(eq(schema.teams.tournamentId, ctx.tournamentId))
+    .all()
+    .filter(
+      (x) => x.pool && x.pool === team.pool && x.id !== team.id && x.status === "accepted",
+    );
+
+  const waitlist = db
+    .select()
+    .from(schema.teams)
+    .where(
+      and(
+        eq(schema.teams.tournamentId, ctx.tournamentId),
+        eq(schema.teams.status, "waitlisted"),
+      ),
+    )
+    .all();
+
+  // --- report only ---------------------------------------------------------
+  if (!input.confirm) {
+    const lines = [
+      `IMPACT OF "${team.name}" WITHDRAWING — nothing has been changed yet.`,
+      "",
+      `  Pool: ${team.pool ?? "unassigned"} (${poolmates.length} other teams)`,
+      `  Seed: ${team.seed ?? "unseeded"}`,
+      `  Paid: ${team.feePaid ? `yes, $${((team.amountPaid ?? 0) / 100).toFixed(0)}` : "no"}`,
+      `  Games played: ${played.length}`,
+      `  Games not yet played: ${unplayed.length}`,
+    ];
+
+    if (played.length && unplayed.length) {
+      lines.push(
+        "",
+        "  They are mid-tournament. Removing completed results would change the",
+        "  standings of teams that already played them, which is unfair to those",
+        "  teams. Forfeiting the remainder is usually the right call.",
+      );
+    }
+
+    lines.push("", "OPTIONS:");
+    if (waitlist.length) {
+      lines.push(
+        `  1. Promote a waitlisted team into the slot — ${waitlist
+          .map((w) => w.name)
+          .join(", ")}. Cleanest: the schedule is untouched, they inherit the seed`,
+        `     and pool. Only works before play starts, and only if they can get there.`,
+      );
+    } else {
+      lines.push("  1. No waitlisted teams available to promote.");
+    }
+    lines.push(
+      `  2. Forfeit — keep the schedule, mark their ${unplayed.length} remaining`,
+      `     game(s) as forfeits. Right answer once play has begun.`,
+      `  3. Remove — delete their unplayed games. The pool runs short and their`,
+      `     poolmates each get one fewer game.`,
+      `  4. Regenerate — rebuild the whole schedule for the reduced field. Only`,
+      `     sensible before play starts; it invalidates anything already printed.`,
+      "",
+      `Tell me which, and whether to refund. Then I'll call this again with confirm.`,
+    );
+    return lines.join("\n");
+  }
+
+  // --- apply ---------------------------------------------------------------
+  db.update(schema.teams)
+    .set({ status: "withdrawn" })
+    .where(eq(schema.teams.id, team.id))
+    .run();
+
+  if (input.replacementTeam) {
+    const rep = db
+      .select()
+      .from(schema.teams)
+      .where(
+        and(
+          eq(schema.teams.tournamentId, ctx.tournamentId),
+          eq(schema.teams.name, input.replacementTeam),
+        ),
+      )
+      .get();
+    if (!rep) return `Withdrew ${team.name}, but no team called "${input.replacementTeam}" to promote.`;
+
+    db.update(schema.teams)
+      .set({ status: "accepted", seed: team.seed, pool: team.pool })
+      .where(eq(schema.teams.id, rep.id))
+      .run();
+
+    for (const g of unplayed) {
+      db.update(schema.games)
+        .set({
+          homeTeamId: g.homeTeamId === team.id ? rep.id : g.homeTeamId,
+          awayTeamId: g.awayTeamId === team.id ? rep.id : g.awayTeamId,
+        })
+        .where(eq(schema.games.id, g.id))
+        .run();
+    }
+    return (
+      `${team.name} withdrew. ${rep.name} promoted from the waitlist into seed ` +
+      `${team.seed ?? "?"}, pool ${team.pool ?? "?"}, and slotted into all ` +
+      `${unplayed.length} remaining game(s). The schedule is otherwise unchanged — ` +
+      `nothing printed needs reprinting except the team list.`
+    );
+  }
+
+  if (input.action === "forfeit") {
+    for (const g of unplayed) {
+      const isHome = g.homeTeamId === team.id;
+      db.update(schema.games)
+        .set({
+          status: "forfeit",
+          homeScore: isHome ? 0 : 15,
+          awayScore: isHome ? 15 : 0,
+          reportedVia: "admin",
+          reportedAt: Math.floor(Date.now() / 1000),
+        })
+        .where(eq(schema.games.id, g.id))
+        .run();
+    }
+    advanceTournament(ctx.tournamentId);
+    return (
+      `${team.name} withdrew. Their ${unplayed.length} remaining game(s) are ` +
+      `recorded as forfeits (15-0). Completed results are untouched, so nobody's ` +
+      `existing standings move. Tell the affected captains — they now have a bye ` +
+      `where they expected a game.`
+    );
+  }
+
+  if (input.action === "remove") {
+    for (const g of unplayed) {
+      db.delete(schema.games).where(eq(schema.games.id, g.id)).run();
+    }
+    return (
+      `${team.name} withdrew and their ${unplayed.length} unplayed game(s) were ` +
+      `removed. Pool ${team.pool ?? "?"} now has ${poolmates.length} teams, and ` +
+      `those teams each play one fewer game. Check the guaranteed-games number ` +
+      `you promised in the bid announcement still holds.`
+    );
+  }
+
+  if (input.action === "regenerate") {
+    return (
+      `${team.name} is marked withdrawn. Now call generate_schedule (or ` +
+      `schedule_divisions) to rebuild for the reduced field. Anything already ` +
+      `printed or sent to captains is now out of date and must be re-sent.`
+    );
+  }
+
+  return (
+    `${team.name} is marked withdrawn. No schedule changes were made — call again ` +
+    `with an action (forfeit, remove, regenerate) or a replacementTeam.`
+  );
+}
+
 function draftOutreach(input: Record<string, any>, ctx: Ctx) {
   db.insert(schema.outreach)
     .values({
@@ -1025,6 +1434,23 @@ function getStatus(ctx: Ctx) {
     .map(([k, v]) => `  ${k}: ${v}`)
     .join("\n");
 
+  const mapped = db
+    .select()
+    .from(schema.fields)
+    .where(eq(schema.fields.tournamentId, ctx.tournamentId))
+    .all();
+  const scheduleMax = Math.max(
+    0,
+    ...gameRows.map((g) => Number(g.field) || 0),
+  );
+  const fieldIssues = fieldCountWarnings({
+    mapped: mapped.length,
+    scheduleMax,
+    declared: t.fieldCount,
+  });
+
+  const divisions = [...new Set(gameRows.map((g) => g.division).filter(Boolean))];
+
   const lines = [
     "TOURNAMENT",
     facts,
@@ -1039,11 +1465,18 @@ function getStatus(ctx: Ctx) {
     "",
     "SCHEDULE",
     `  ${gameRows.length} games generated | ` +
-      `${gameRows.filter((g) => g.status === "final").length} final`,
+      `${gameRows.filter((g) => g.status === "final").length} final` +
+      (divisions.length > 1 ? ` | divisions: ${divisions.join(", ")}` : ""),
+    `  ${mapped.length} field(s) on the site map, schedule uses ${scheduleMax}`,
     "",
     "TASKS",
     `  ${open.length} open, ${late.length} late`,
   ];
+
+  if (fieldIssues.length) {
+    lines.push("", "FIELD COUNT MISMATCH:");
+    for (const w of fieldIssues) lines.push(`  - ${w}`);
+  }
 
   if (late.length) {
     lines.push("", "  LATE:");

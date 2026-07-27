@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import QRCode from "qrcode";
 import { db, schema } from "@/lib/db";
 import { SITE_URL, buildMetadata } from "@/lib/seo";
-import { siteMapSvg } from "@/lib/siteMapSvg";
+import { backdropTiles, layoutBounds, siteMapSvg } from "@/lib/siteMapSvg";
 import {
   formatDateRange,
   getTeams,
@@ -58,24 +58,40 @@ export default async function HandoutPage({ params }: Params) {
     color: { dark: "#000000", light: "#ffffff" },
   });
 
-  const map = siteMapSvg(
-    fields.map((f) => ({
-      name: f.name,
-      centerLat: Number(f.centerLat),
-      centerLng: Number(f.centerLng),
-      bearing: f.bearing,
-      lengthM: f.lengthM,
-      widthM: f.widthM,
-      endzoneM: f.endzoneM,
-    })),
-    points.map((p) => ({
-      kind: p.kind,
-      label: p.label,
-      lat: Number(p.lat),
-      lng: Number(p.lng),
-      color: p.color,
-    })),
-  );
+  const mapFields = fields.map((f) => ({
+    name: f.name,
+    centerLat: Number(f.centerLat),
+    centerLng: Number(f.centerLng),
+    bearing: f.bearing,
+    lengthM: f.lengthM,
+    widthM: f.widthM,
+    endzoneM: f.endzoneM,
+  }));
+  const mapPoints = points.map((p) => ({
+    kind: p.kind,
+    label: p.label,
+    lat: Number(p.lat),
+    lng: Number(p.lng),
+    color: p.color,
+  }));
+
+  // Aerial imagery behind the line art: someone standing in the car park can
+  // match the page to what they can actually see. If the tiles don't load, the
+  // map still renders as line art rather than failing.
+  const bounds = layoutBounds(mapFields, mapPoints);
+  let backdrop: string | null = null;
+  if (bounds) {
+    try {
+      backdrop = await backdropTiles(bounds, 700, 460);
+    } catch {
+      backdrop = null;
+    }
+  }
+
+  const map = siteMapSvg(mapFields, mapPoints, {
+    backdrop,
+    bounds: backdrop ? bounds : null,
+  });
 
   // Pools, for the front page.
   const pools = new Map<string, string[]>();

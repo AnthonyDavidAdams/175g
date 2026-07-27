@@ -68,6 +68,13 @@ export const tournaments = sqliteTable(
     telegramChatId: text("telegram_chat_id"),
     telegramInviteUrl: text("telegram_invite_url"),
 
+    /**
+     * How divisions share the fields when an event runs more than one:
+     *   "alternate" — divisions take turns, each using every field for a round
+     *   "split"     — divisions play concurrently on dedicated fields
+     */
+    divisionMode: text("division_mode").default("alternate"),
+
     // Free-form state the TD agent maintains; the conversational equivalent of
     // brief.md in the plugin.
     brief: text("brief"),
@@ -181,6 +188,8 @@ export const games = sqliteTable(
 
     stage: text("stage").notNull().default("pool"), // pool | bracket | placement
     pool: text("pool"),
+    /** Which division this game belongs to, when an event runs more than one. */
+    division: text("division"),
 
     homeTeamId: text("home_team_id").references(() => teams.id),
     awayTeamId: text("away_team_id").references(() => teams.id),
