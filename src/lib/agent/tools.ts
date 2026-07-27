@@ -6,6 +6,7 @@ import { advanceTournament } from "../advance";
 import { checkCapacity, expand, type CustomFormatSpec } from "../customFormat";
 import { buildFormat, layOutSchedule } from "../formats";
 import { allocate, fieldCountWarnings } from "../multiDivision";
+import { describeSites, travelWarnings } from "../multiSite";
 import { buildTimeline } from "../timeline";
 import { formatDateRange } from "../tournament";
 import {
@@ -282,6 +283,89 @@ export const TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "manage_sites",
+    description:
+      "Manage venues for a tournament spread across more than one location. " +
+      "Actions: list, add, update, remove, assign_fields.\n\n" +
+      "Travel time between sites is a scheduling constraint, not a footnote — a " +
+      "team sent across town between consecutive rounds arrives late and delays " +
+      "everyone on that field. Keep a whole pool at one venue wherever possible.",
+    input_schema: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          description: "list | add | update | remove | assign_fields",
+        },
+        siteId: { type: "string" },
+        name: { type: "string" },
+        address: { type: "string" },
+        travelMinutes: {
+          type: "number",
+          description: "Door-to-door minutes from the primary site.",
+        },
+        isPrimary: { type: "boolean" },
+        parkingNotes: { type: "string" },
+        fieldNames: {
+          type: "array",
+          description: "assign_fields: which fields belong to this site.",
+          items: { type: "string" },
+        },
+      },
+      required: ["action"],
+    },
+  },
+  {
+    name: "edit_game",
+    description:
+      "Override anything about a single game: which field, round, start time, " +
+      "venue, which teams, the score, or its status. This is the escape hatch — " +
+      "whatever a generator produced, the TD can overrule it, and so can you on " +
+      "their behalf.\n\n" +
+      "Use it for the real-world fixes generators can't anticipate: a waterlogged " +
+      "field, a team stuck in traffic, a showcase game moved to the stadium, a " +
+      "captain's agreed swap. Say plainly what you changed and what now needs " +
+      "re-announcing.",
+    input_schema: {
+      type: "object",
+      properties: {
+        gameCode: {
+          type: "string",
+          description: "The game's code, e.g. G12. Use get_schedule to find it.",
+        },
+        field: { type: "string" },
+        round: { type: "number" },
+        startTime: { type: "string", description: "HH:MM" },
+        day: { type: "number" },
+        siteName: { type: "string" },
+        homeTeam: { type: "string" },
+        awayTeam: { type: "string" },
+        homeScore: { type: "number" },
+        awayScore: { type: "number" },
+        status: {
+          type: "string",
+          description: "scheduled | in_progress | final | forfeit",
+        },
+      },
+      required: ["gameCode"],
+    },
+  },
+  {
+    name: "get_schedule",
+    description:
+      "Read the current schedule with game codes, so you can reference or edit " +
+      "specific games. Optionally filter to one round, division, or team.",
+    input_schema: {
+      type: "object",
+      properties: {
+        round: { type: "number" },
+        division: { type: "string" },
+        team: { type: "string" },
+        unplayedOnly: { type: "boolean" },
+      },
+    },
+  },
+  {
     name: "withdraw_team",
     description:
       "Handle a team dropping out. Call WITHOUT confirm first: it reports the " +
@@ -397,6 +481,12 @@ export async function runTool(
       return addSponsor(input, ctx);
     case "schedule_divisions":
       return scheduleDivisions(input, ctx);
+    case "manage_sites":
+      return manageSites(input, ctx);
+    case "edit_game":
+      return editGame(input, ctx);
+    case "get_schedule":
+      return getSchedule(input, ctx);
     case "withdraw_team":
       return withdrawTeam(input, ctx);
     case "manage_waiver":
@@ -1020,6 +1110,359 @@ function scheduleDivisions(input: Record<string, any>, ctx: Ctx) {
       ? "Switch to split mode if the day runs too long."
       : "Switch to alternate mode if a division needs more fields at once.",
   ].join("\n");
+}
+
+
+function siteList(tournamentId: string) {
+  return db
+    .select()
+    .from(schema.sites)
+    .where(eq(schema.sites.tournamentId, tournamentId))
+    .all();
+}
+
+function manageSites(input: Record<string, any>, ctx: Ctx) {
+  const sites = siteList(ctx.tournamentId);
+
+  if (input.action === "list") {
+    if (!sites.length) {
+      return (
+        "No sites defined — the tournament is treated as a single venue. Add one " +
+        "only if fields are genuinely at separate locations."
+      );
+    }
+    const fields = db
+      .select()
+      .from(schema.fields)
+      .where(eq(schema.fields.tournamentId, ctx.tournamentId))
+      .all();
+    return [
+      ...sites.map((x) => {
+        const mine = fields.filter((f) => f.siteId === x.id);
+        return (
+          `  ${x.id} — ${x.name}${x.isPrimary ? " (primary)" : ""}, ` +
+          `${x.travelMinutes ?? 0} min from primary, ${mine.length} field(s)` +
+          (mine.length ? `: ${mine.map((f) => f.name).join(", ")}` : "")
+        );
+      }),
+      "",
+      describeSites(
+        sites.map((x) => ({
+          id: x.id,
+          name: x.name,
+          travelMinutes: x.travelMinutes ?? 0,
+          isPrimary: !!x.isPrimary,
+        })),
+      ),
+    ].join("\n");
+  }
+
+  if (input.action === "add") {
+    if (!input.name) return "A site needs a name.";
+    const id = nanoid();
+    const isPrimary = input.isPrimary ?? sites.length === 0;
+    if (isPrimary) {
+      db.update(schema.sites)
+        .set({ isPrimary: false })
+        .where(eq(schema.sites.tournamentId, ctx.tournamentId))
+        .run();
+    }
+    db.insert(schema.sites)
+      .values({
+        id,
+        tournamentId: ctx.tournamentId,
+        name: input.name,
+        address: input.address ?? null,
+        travelMinutes: Math.round(input.travelMinutes ?? 0),
+        isPrimary,
+        parkingNotes: input.parkingNotes ?? null,
+        sortOrder: sites.length,
+      })
+      .run();
+    return (
+      `Added site "${input.name}"${isPrimary ? " as the primary venue" : ""} ` +
+      `(id ${id}). Assign fields to it with action assign_fields, then reschedule ` +
+      `so pools stay at one venue.`
+    );
+  }
+
+  if (input.action === "update") {
+    const site =
+      sites.find((x) => x.id === input.siteId) ??
+      sites.find((x) => x.name === input.name);
+    if (!site) return "Site not found. Call with action list first.";
+    const patch: Record<string, unknown> = {};
+    for (const k of ["name", "address", "parkingNotes"]) {
+      if (input[k] !== undefined) patch[k] = input[k];
+    }
+    if (input.travelMinutes !== undefined) {
+      patch.travelMinutes = Math.round(input.travelMinutes);
+    }
+    if (input.isPrimary) {
+      db.update(schema.sites)
+        .set({ isPrimary: false })
+        .where(eq(schema.sites.tournamentId, ctx.tournamentId))
+        .run();
+      patch.isPrimary = true;
+    }
+    db.update(schema.sites).set(patch).where(eq(schema.sites.id, site.id)).run();
+    return `Updated ${site.name}: ${Object.keys(patch).join(", ")}.`;
+  }
+
+  if (input.action === "remove") {
+    const site = sites.find(
+      (x) => x.id === input.siteId || x.name === input.name,
+    );
+    if (!site) return "Site not found.";
+    db.update(schema.fields)
+      .set({ siteId: null })
+      .where(eq(schema.fields.siteId, site.id))
+      .run();
+    db.update(schema.games)
+      .set({ siteId: null })
+      .where(eq(schema.games.siteId, site.id))
+      .run();
+    db.delete(schema.sites).where(eq(schema.sites.id, site.id)).run();
+    return `Removed ${site.name}. Its fields and games are now unassigned.`;
+  }
+
+  if (input.action === "assign_fields") {
+    const site = sites.find(
+      (x) => x.id === input.siteId || x.name === input.name,
+    );
+    if (!site) return "Site not found. Call with action list first.";
+    const names: string[] = input.fieldNames ?? [];
+    if (!names.length) return "Give fieldNames to assign.";
+
+    const fields = db
+      .select()
+      .from(schema.fields)
+      .where(eq(schema.fields.tournamentId, ctx.tournamentId))
+      .all();
+    const assigned: string[] = [];
+    const missing: string[] = [];
+    for (const n of names) {
+      const f = fields.find((x) => x.name.toLowerCase() === n.toLowerCase());
+      if (!f) {
+        missing.push(n);
+        continue;
+      }
+      db.update(schema.fields)
+        .set({ siteId: site.id })
+        .where(eq(schema.fields.id, f.id))
+        .run();
+      assigned.push(f.name);
+      // Keep existing games pointing at the right venue.
+      db.update(schema.games)
+        .set({ siteId: site.id })
+        .where(
+          and(
+            eq(schema.games.tournamentId, ctx.tournamentId),
+            eq(schema.games.field, f.name.replace(/^Field\s*/i, "")),
+          ),
+        )
+        .run();
+    }
+    return [
+      `Assigned ${assigned.length} field(s) to ${site.name}: ${assigned.join(", ")}.`,
+      missing.length ? `Not found: ${missing.join(", ")}.` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  return 'Unknown action. Use list, add, update, remove, or assign_fields.';
+}
+
+function getSchedule(input: Record<string, any>, ctx: Ctx) {
+  const teams = db
+    .select()
+    .from(schema.teams)
+    .where(eq(schema.teams.tournamentId, ctx.tournamentId))
+    .all();
+  const nameById = new Map(teams.map((t) => [t.id, t.name]));
+  const sites = new Map(siteList(ctx.tournamentId).map((s) => [s.id, s.name]));
+
+  let games = db
+    .select()
+    .from(schema.games)
+    .where(eq(schema.games.tournamentId, ctx.tournamentId))
+    .all();
+
+  if (input.round !== undefined) games = games.filter((g) => g.round === input.round);
+  if (input.division) games = games.filter((g) => g.division === input.division);
+  if (input.unplayedOnly) games = games.filter((g) => g.status !== "final");
+  if (input.team) {
+    const t = teams.find(
+      (x) => x.name.toLowerCase() === String(input.team).toLowerCase(),
+    );
+    if (!t) return `No team called "${input.team}".`;
+    games = games.filter((g) => g.homeTeamId === t.id || g.awayTeamId === t.id);
+  }
+
+  if (!games.length) return "No games match that filter.";
+
+  return games
+    .sort((a, b) => (a.round ?? 0) - (b.round ?? 0) || Number(a.field) - Number(b.field))
+    .map((g) => {
+      const home = nameById.get(g.homeTeamId ?? "") ?? g.homeLabel ?? "TBD";
+      const away = nameById.get(g.awayTeamId ?? "") ?? g.awayLabel ?? "TBD";
+      const score = g.status === "final" ? ` ${g.homeScore}-${g.awayScore}` : "";
+      const site = g.siteId ? ` @${sites.get(g.siteId) ?? "?"}` : "";
+      return (
+        `  ${g.gameCode ?? g.id.slice(0, 6)}  D${g.day ?? 1} R${g.round} ` +
+        `${g.startTime ?? ""} F${g.field}${site}  ${home} v ${away}${score}  ` +
+        `[${g.status}]`
+      );
+    })
+    .join("\n");
+}
+
+function editGame(input: Record<string, any>, ctx: Ctx) {
+  const game = db
+    .select()
+    .from(schema.games)
+    .where(
+      and(
+        eq(schema.games.tournamentId, ctx.tournamentId),
+        eq(schema.games.gameCode, input.gameCode),
+      ),
+    )
+    .get();
+  if (!game) {
+    return `No game with code "${input.gameCode}". Call get_schedule to list them.`;
+  }
+
+  const teams = db
+    .select()
+    .from(schema.teams)
+    .where(eq(schema.teams.tournamentId, ctx.tournamentId))
+    .all();
+  const byName = (n: string) =>
+    teams.find((t) => t.name.toLowerCase() === String(n).toLowerCase());
+
+  const patch: Record<string, unknown> = {};
+  const changed: string[] = [];
+
+  if (input.field !== undefined) {
+    patch.field = String(input.field);
+    changed.push(`field -> ${input.field}`);
+  }
+  if (input.round !== undefined) {
+    patch.round = input.round;
+    changed.push(`round -> ${input.round}`);
+  }
+  if (input.day !== undefined) {
+    patch.day = input.day;
+    changed.push(`day -> ${input.day}`);
+  }
+  if (input.startTime !== undefined) {
+    patch.startTime = input.startTime;
+    changed.push(`start -> ${input.startTime}`);
+  }
+  if (input.siteName !== undefined) {
+    const site = siteList(ctx.tournamentId).find(
+      (s) => s.name.toLowerCase() === String(input.siteName).toLowerCase(),
+    );
+    if (!site) return `No site called "${input.siteName}".`;
+    patch.siteId = site.id;
+    changed.push(`venue -> ${site.name}`);
+  }
+  if (input.homeTeam !== undefined) {
+    const t = byName(input.homeTeam);
+    if (!t) return `No team called "${input.homeTeam}".`;
+    patch.homeTeamId = t.id;
+    patch.homeLabel = null;
+    changed.push(`home -> ${t.name}`);
+  }
+  if (input.awayTeam !== undefined) {
+    const t = byName(input.awayTeam);
+    if (!t) return `No team called "${input.awayTeam}".`;
+    patch.awayTeamId = t.id;
+    patch.awayLabel = null;
+    changed.push(`away -> ${t.name}`);
+  }
+  if (input.homeScore !== undefined) {
+    patch.homeScore = input.homeScore;
+    changed.push(`home score -> ${input.homeScore}`);
+  }
+  if (input.awayScore !== undefined) {
+    patch.awayScore = input.awayScore;
+    changed.push(`away score -> ${input.awayScore}`);
+  }
+  if (input.status !== undefined) {
+    patch.status = input.status;
+    changed.push(`status -> ${input.status}`);
+  }
+  if (
+    (input.homeScore !== undefined || input.awayScore !== undefined) &&
+    input.status === undefined
+  ) {
+    patch.status = "final";
+    changed.push("status -> final");
+  }
+
+  if (!changed.length) return "Nothing to change.";
+
+  patch.reportedVia = "admin";
+  patch.reportedAt = Math.floor(Date.now() / 1000);
+
+  db.update(schema.games)
+    .set(patch)
+    .where(eq(schema.games.id, game.id))
+    .run();
+
+  advanceTournament(ctx.tournamentId);
+
+  // An override can create a clash the generator would never have produced,
+  // so re-check rather than assuming the TD spotted it.
+  const all = db
+    .select()
+    .from(schema.games)
+    .where(eq(schema.games.tournamentId, ctx.tournamentId))
+    .all();
+  const updated = all.find((g) => g.id === game.id)!;
+  const clashes = all.filter(
+    (g) =>
+      g.id !== updated.id &&
+      g.round === updated.round &&
+      g.field === updated.field &&
+      (g.siteId ?? null) === (updated.siteId ?? null),
+  );
+
+  const sites = siteList(ctx.tournamentId);
+  const travel = sites.length > 1
+    ? travelWarnings(
+        all.map((g) => ({
+          gameId: g.gameCode ?? g.id,
+          round: g.round ?? 0,
+          siteId: g.siteId,
+          homeTeamId: g.homeTeamId,
+          awayTeamId: g.awayTeamId,
+          pool: g.pool,
+        })),
+        sites.map((x) => ({
+          id: x.id,
+          name: x.name,
+          travelMinutes: x.travelMinutes ?? 0,
+          isPrimary: !!x.isPrimary,
+        })),
+        { roundMinutes: 120 },
+      )
+    : [];
+
+  return [
+    `${input.gameCode}: ${changed.join(", ")}.`,
+    clashes.length
+      ? `\nCLASH: ${clashes.length} other game(s) now sit on field ${updated.field} ` +
+        `in round ${updated.round} (${clashes.map((c) => c.gameCode).join(", ")}). ` +
+        `Move one of them.`
+      : "",
+    travel.length ? `\nTravel:\n${travel.map((w) => `  - ${w}`).join("\n")}` : "",
+    "\nThe published schedule updates immediately. Tell the affected captains.",
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function withdrawTeam(input: Record<string, any>, ctx: Ctx) {

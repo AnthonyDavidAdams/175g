@@ -190,6 +190,8 @@ export const games = sqliteTable(
     pool: text("pool"),
     /** Which division this game belongs to, when an event runs more than one. */
     division: text("division"),
+    /** Which venue this game is at, when the event spans more than one. */
+    siteId: text("site_id").references(() => sites.id),
 
     homeTeamId: text("home_team_id").references(() => teams.id),
     awayTeamId: text("away_team_id").references(() => teams.id),
@@ -369,6 +371,36 @@ export const waiverSignatures = sqliteTable(
 );
 
 /* ---------------------------------------------------------------------------
+ * Sites
+ *
+ * Big tournaments routinely span two or three venues a few minutes apart. The
+ * thing that actually breaks is not the map, it is the schedule: a team sent
+ * across town between consecutive rounds either forfeits or delays everyone.
+ * Sites therefore carry travel time, and the scheduler treats it as a hard
+ * constraint rather than a display detail.
+ * ------------------------------------------------------------------------- */
+
+export const sites = sqliteTable(
+  "sites",
+  {
+    id: text("id").primaryKey(),
+    tournamentId: text("tournament_id").notNull().references(() => tournaments.id),
+    name: text("name").notNull(),
+    address: text("address"),
+    lat: text("lat"),
+    lng: text("lng"),
+    /** Typical door-to-door travel time from the primary site, in minutes. */
+    travelMinutes: integer("travel_minutes").default(0),
+    isPrimary: integer("is_primary", { mode: "boolean" }).default(false),
+    parkingNotes: text("parking_notes"),
+    notes: text("notes"),
+    sortOrder: integer("sort_order").default(0),
+    createdAt: integer("created_at").notNull().default(now),
+  },
+  (t) => [index("sites_tournament_idx").on(t.tournamentId)],
+);
+
+/* ---------------------------------------------------------------------------
  * Field layout
  *
  * Fields are placed on a real map at true scale, so the site map a TD hands to
@@ -382,6 +414,7 @@ export const fields = sqliteTable(
   {
     id: text("id").primaryKey(),
     tournamentId: text("tournament_id").notNull().references(() => tournaments.id),
+    siteId: text("site_id").references(() => sites.id),
     name: text("name").notNull(),
     /** usau | wfdf | beach | indoor | youth | custom */
     preset: text("preset").notNull().default("usau"),
@@ -411,6 +444,7 @@ export const sitePoints = sqliteTable(
   {
     id: text("id").primaryKey(),
     tournamentId: text("tournament_id").notNull().references(() => tournaments.id),
+    siteId: text("site_id").references(() => sites.id),
     kind: text("kind").notNull(), // water | trainer | hq | parking | toilets | trash | food | other
     label: text("label").notNull(),
     lat: text("lat").notNull(),

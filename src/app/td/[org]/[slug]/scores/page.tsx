@@ -26,6 +26,7 @@ export default async function ScoresPage({ params }: Params) {
 
   const games = resolvedGames(found.tournament.id).map((g) => ({
     id: g.id,
+    gameCode: g.gameCode,
     round: g.round,
     field: g.field,
     startTime: g.startTime,
@@ -44,7 +45,8 @@ export default async function ScoresPage({ params }: Params) {
       </Link>
       <h1 className="display mt-3 text-3xl">Score entry</h1>
       <p className="mono mt-2">
-        Collect actively — don&apos;t wait for teams to report
+        Collect actively — don&apos;t wait for teams to report. Click a field number
+        to move a game.
       </p>
 
       {games.length === 0 ? (
