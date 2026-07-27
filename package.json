@@ -1,0 +1,41 @@
+{
+  "name": "175g",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "node scripts/start.mjs",
+    "db:push": "drizzle-kit push",
+    "seed": "node scripts/seed.mjs",
+    "grant": "node scripts/grant.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "//": "Build- and start-critical packages live in dependencies on purpose. Any host that sets NODE_ENV=production prunes devDependencies, which silently breaks `next build` (tailwind/postcss/typescript) and `drizzle-kit push` at startup.",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.69.0",
+    "@aws-sdk/client-sesv2": "^3.700.0",
+    "@tailwindcss/postcss": "^4",
+    "@types/leaflet": "^1.9.21",
+    "better-sqlite3": "^12.9.0",
+    "drizzle-kit": "^0.31.10",
+    "drizzle-orm": "^0.45.2",
+    "leaflet": "^1.9.4",
+    "nanoid": "^5.1.9",
+    "next": "16.2.4",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "tailwindcss": "^4",
+    "typescript": "^5",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19"
+  }
+}

@@ -1,0 +1,1057 @@
+import type Anthropic from "@anthropic-ai/sdk";
+import { and, eq } from "drizzle-orm";
+import { nanoid } from "nanoid";
+import { db, schema } from "../db";
+import { advanceTournament } from "../advance";
+import { checkCapacity, expand, type CustomFormatSpec } from "../customFormat";
+import { buildFormat, layOutSchedule } from "../formats";
+import { buildTimeline } from "../timeline";
+import { formatDateRange } from "../tournament";
+import {
+  LEGAL_DISCLAIMER,
+  TEMPLATES,
+  fillTemplate,
+  templateByKey,
+} from "../waiverTemplates";
+
+/**
+ * Tools the TD agent can call. Each one mutates the tournament the director is
+ * actually building, so the conversation *is* the product rather than a wrapper
+ * around a form.
+ *
+ * Two rules hold across every tool:
+ *   - Outreach is drafted, never sent. `draft_outreach` writes a row with status
+ *     "draft"; a human approves before anything leaves.
+ *   - Marketing consent is never set by a tool. It comes from the person.
+ */
+
+export const TOOLS: Anthropic.Tool[] = [
+  {
+    name: "update_tournament",
+    description:
+      "Set or change core tournament facts: dates, venue, division, field count, " +
+      "bid fee, deadlines, refund policy, description. Call this as soon as the TD " +
+      "tells you something concrete — do not wait until the end of the conversation.",
+    input_schema: {
+      type: "object",
+      properties: {
+        name: { type: "string" },
+        startDate: { type: "string", description: "YYYY-MM-DD" },
+        endDate: { type: "string", description: "YYYY-MM-DD" },
+        venueName: { type: "string" },
+        venueAddress: { type: "string" },
+        city: { type: "string" },
+        fieldCount: { type: "number" },
+        surface: { type: "string", description: "grass | turf | beach | indoor" },
+        division: {
+          type: "string",
+          description: "mens | womens | mixed | multiple",
+        },
+        teamTarget: { type: "number" },
+        bidFee: { type: "number", description: "dollars per team" },
+        sanctioned: { type: "boolean" },
+        applyDeadline: { type: "string" },
+        acceptanceDate: { type: "string" },
+        paymentDeadline: { type: "string" },
+        rosterDeadline: { type: "string" },
+        refundPolicy: { type: "string" },
+        description: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "generate_timeline",
+    description:
+      "Generate the countdown of deadlines from the event date, adapted to how " +
+      "much runway actually remains. Replaces any existing task list. Reports what " +
+      "is already late and which hard deadlines can no longer be met.",
+    input_schema: {
+      type: "object",
+      properties: {
+        eventDate: { type: "string", description: "YYYY-MM-DD" },
+      },
+      required: ["eventDate"],
+    },
+  },
+  {
+    name: "add_team",
+    description: "Add or update a team in the field.",
+    input_schema: {
+      type: "object",
+      properties: {
+        name: { type: "string" },
+        school: { type: "string" },
+        division: { type: "string" },
+        captainName: { type: "string" },
+        captainEmail: { type: "string" },
+        captainPhone: { type: "string" },
+        status: {
+          type: "string",
+          description: "applied | accepted | waitlisted | declined | withdrawn",
+        },
+        seed: { type: "number" },
+        notes: { type: "string" },
+      },
+      required: ["name"],
+    },
+  },
+  {
+    name: "generate_schedule",
+    description:
+      "Generate USAU-compliant pools, seeding, brackets, and the round-by-round " +
+      "schedule from the accepted teams. Refuses and explains if the plan is " +
+      "infeasible — too many teams for the fields and hours available, or more " +
+      "games per team than the format manual allows.",
+    input_schema: {
+      type: "object",
+      properties: {
+        fields: { type: "number" },
+        days: { type: "number" },
+        roundMinutes: { type: "number", description: "default 120" },
+        roundsPerDay: { type: "number", description: "default 4" },
+        startTime: { type: "string", description: "HH:MM, default 09:00" },
+        gameTo: { type: "number", description: "default 15" },
+      },
+    },
+  },
+  {
+    name: "define_custom_format",
+    description:
+      "Define and apply a NON-standard tournament format when the USAU library " +
+      "doesn't fit — hat tournaments, swiss, three-team pools with crossovers, " +
+      "showcase games, split divisions, double round robins, consolation ladders, " +
+      "beach 2:2. Validates the structure, reports warnings where it departs from " +
+      "USAU guidance, and replaces the schedule. Use generate_schedule instead for " +
+      "ordinary pools-into-bracket events.\n\n" +
+      "Entrants and game sides may be literal team names or placeholders that " +
+      "resolve as results land: 'A1' (pool A first place), 'W:G12' (winner of game " +
+      "12), 'L:G12' (loser of game 12).",
+    input_schema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "e.g. 'Three pools of five into crossovers'" },
+        description: { type: "string" },
+        gameTo: { type: "number" },
+        fields: { type: "number" },
+        days: { type: "number" },
+        roundsPerDay: { type: "number" },
+        roundMinutes: { type: "number" },
+        startTime: { type: "string", description: "HH:MM" },
+        pools: {
+          type: "array",
+          description: "Named pools with their teams.",
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              teams: { type: "array", items: { type: "string" } },
+            },
+            required: ["name", "teams"],
+          },
+        },
+        stages: {
+          type: "array",
+          description: "Played in order. Each stage occupies one or more rounds.",
+          items: {
+            type: "object",
+            properties: {
+              type: {
+                type: "string",
+                description: "round_robin | bracket | crossover | games | swiss",
+              },
+              pool: { type: "string", description: "round_robin: which pool" },
+              doubleRound: { type: "boolean", description: "round_robin: play twice" },
+              label: { type: "string" },
+              kind: { type: "string", description: "bracket: bracket | placement" },
+              entrants: {
+                type: "array",
+                description: "bracket: best seed first",
+                items: { type: "string" },
+              },
+              rounds: { type: "number", description: "swiss: how many rounds" },
+              teams: { type: "array", items: { type: "string" } },
+              games: {
+                type: "array",
+                description: "crossover/games: explicit matchups",
+                items: {
+                  type: "object",
+                  properties: {
+                    home: { type: "string" },
+                    away: { type: "string" },
+                  },
+                  required: ["home", "away"],
+                },
+              },
+            },
+            required: ["type"],
+          },
+        },
+      },
+      required: ["name", "stages"],
+    },
+  },
+  {
+    name: "pair_swiss_round",
+    description:
+      "Pair the next swiss round from current results — teams with similar records " +
+      "play each other, avoiding rematches. Call after each swiss round is final.",
+    input_schema: {
+      type: "object",
+      properties: {
+        label: { type: "string", description: "defaults to 'Swiss'" },
+      },
+    },
+  },
+  {
+    name: "draft_outreach",
+    description:
+      "Draft an email and queue it for the TD's approval. NEVER sends. Use for " +
+      "team invitations, sponsor asks, facility contacts, and thank-yous. Every " +
+      "draft must contain at least one sentence that could only have been written " +
+      "to this specific recipient.",
+    input_schema: {
+      type: "object",
+      properties: {
+        kind: {
+          type: "string",
+          description: "team | sponsor | facility | volunteer | debrief",
+        },
+        toName: { type: "string" },
+        toEmail: { type: "string" },
+        subject: { type: "string" },
+        body: { type: "string" },
+      },
+      required: ["kind", "toEmail", "subject", "body"],
+    },
+  },
+  {
+    name: "add_sponsor",
+    description: "Add or update a sponsor prospect in the pipeline.",
+    input_schema: {
+      type: "object",
+      properties: {
+        org: { type: "string" },
+        contactName: { type: "string" },
+        email: { type: "string" },
+        phone: { type: "string" },
+        type: { type: "string", description: "cash | inkind | both" },
+        stage: {
+          type: "string",
+          description:
+            "prospect | contacted | in_conversation | committed | paid | declined",
+        },
+        amount: { type: "number", description: "dollars" },
+        inkindDescription: { type: "string" },
+        tier: { type: "string" },
+        notes: { type: "string" },
+      },
+      required: ["org"],
+    },
+  },
+  {
+    name: "manage_waiver",
+    description:
+      "Create a waiver from a template, or rewrite an existing one. Templates: " +
+      "'participant' (every player), 'minor' (parent/guardian consent for under " +
+      "18s), 'team' (captain signs — rosters, payment, conduct), 'volunteer'. " +
+      "Use action 'list' first to see what already exists.\n\n" +
+      "Always tell the TD these are a starting point and not legal advice, and " +
+      "that their school or field provider may require specific language. Editing " +
+      "bumps the version; signatures already collected keep a snapshot of the text " +
+      "the person actually agreed to.",
+    input_schema: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          description: "list | create | rewrite",
+        },
+        templateKey: {
+          type: "string",
+          description: "create: participant | minor | team | volunteer",
+        },
+        waiverId: { type: "string", description: "rewrite: which waiver" },
+        title: { type: "string" },
+        body: { type: "string", description: "rewrite: the full replacement text" },
+        required: { type: "boolean" },
+      },
+      required: ["action"],
+    },
+  },
+  {
+    name: "post_announcement",
+    description:
+      "Post an announcement to the public tournament page, and optionally " +
+      "broadcast it to the Telegram group. Use for weather holds, round starts, " +
+      "field changes.",
+    input_schema: {
+      type: "object",
+      properties: {
+        body: { type: "string" },
+        level: { type: "string", description: "info | warning | urgent" },
+        broadcastTelegram: { type: "boolean" },
+      },
+      required: ["body"],
+    },
+  },
+  {
+    name: "get_status",
+    description:
+      "Read the current state of the tournament: facts, team counts by status, " +
+      "payment status, sponsor pipeline, upcoming and late tasks, schedule state. " +
+      "Call this at the start of a conversation before asking the TD anything.",
+    input_schema: { type: "object", properties: {} },
+  },
+];
+
+type Ctx = { tournamentId: string; orgId: string };
+
+export async function runTool(
+  name: string,
+  input: Record<string, unknown>,
+  ctx: Ctx,
+): Promise<string> {
+  switch (name) {
+    case "update_tournament":
+      return updateTournament(input, ctx);
+    case "generate_timeline":
+      return generateTimeline(input, ctx);
+    case "add_team":
+      return addTeam(input, ctx);
+    case "generate_schedule":
+      return generateSchedule(input, ctx);
+    case "define_custom_format":
+      return defineCustomFormat(input, ctx);
+    case "pair_swiss_round":
+      return pairSwissRound(input, ctx);
+    case "draft_outreach":
+      return draftOutreach(input, ctx);
+    case "add_sponsor":
+      return addSponsor(input, ctx);
+    case "manage_waiver":
+      return manageWaiver(input, ctx);
+    case "post_announcement":
+      return postAnnouncement(input, ctx);
+    case "get_status":
+      return getStatus(ctx);
+    default:
+      return `Unknown tool: ${name}`;
+  }
+}
+
+function updateTournament(input: Record<string, any>, ctx: Ctx) {
+  const patch: Record<string, unknown> = {};
+  const passthrough = [
+    "name", "startDate", "endDate", "venueName", "venueAddress", "city",
+    "fieldCount", "surface", "division", "teamTarget", "sanctioned",
+    "applyDeadline", "acceptanceDate", "paymentDeadline", "rosterDeadline",
+    "refundPolicy", "description",
+  ];
+  for (const k of passthrough) if (input[k] !== undefined) patch[k] = input[k];
+  if (input.bidFee !== undefined) patch.bidFee = Math.round(input.bidFee * 100);
+
+  if (!Object.keys(patch).length) return "Nothing to update.";
+
+  db.update(schema.tournaments)
+    .set(patch)
+    .where(eq(schema.tournaments.id, ctx.tournamentId))
+    .run();
+
+  return `Updated: ${Object.keys(patch).join(", ")}.`;
+}
+
+function generateTimeline(input: Record<string, any>, ctx: Ctx) {
+  const rows = buildTimeline(input.eventDate, new Date());
+
+  db.delete(schema.tasks)
+    .where(eq(schema.tasks.tournamentId, ctx.tournamentId))
+    .run();
+
+  for (const r of rows) {
+    db.insert(schema.tasks)
+      .values({
+        id: nanoid(),
+        tournamentId: ctx.tournamentId,
+        phase: r.phase,
+        task: r.task,
+        owner: r.owner,
+        dueDate: r.due,
+        hardDeadline: r.hard,
+      })
+      .run();
+  }
+
+  const late = rows.filter((r) => r.status === "LATE" && r.weeksBefore > 0);
+  const lateHard = late.filter((r) => r.hard);
+  const soon = rows.filter((r) => r.status === "THIS WEEK");
+
+  const lines = [
+    `Generated ${rows.length} deadlines from event date ${input.eventDate}.`,
+    `${late.length} already late, ${soon.length} due this week.`,
+  ];
+  if (lateHard.length) {
+    lines.push("", "Hard deadlines already passed (cannot be fixed by working harder):");
+    for (const r of lateHard) lines.push(`  - ${r.task} (was due ${r.due})`);
+  }
+  if (soon.length) {
+    lines.push("", "Due this week:");
+    for (const r of soon) lines.push(`  - ${r.task} (${r.owner})`);
+  }
+  return lines.join("\n");
+}
+
+function addTeam(input: Record<string, any>, ctx: Ctx) {
+  const existing = db
+    .select()
+    .from(schema.teams)
+    .where(
+      and(
+        eq(schema.teams.tournamentId, ctx.tournamentId),
+        eq(schema.teams.name, input.name),
+      ),
+    )
+    .get();
+
+  const values: Record<string, unknown> = {};
+  for (const k of [
+    "school", "division", "captainName", "captainEmail", "captainPhone",
+    "status", "seed", "notes",
+  ]) {
+    if (input[k] !== undefined) values[k] = input[k];
+  }
+
+  if (existing) {
+    db.update(schema.teams)
+      .set(values)
+      .where(eq(schema.teams.id, existing.id))
+      .run();
+    return `Updated team "${input.name}".`;
+  }
+
+  db.insert(schema.teams)
+    .values({
+      id: nanoid(),
+      tournamentId: ctx.tournamentId,
+      name: input.name,
+      status: (input.status as string) ?? "applied",
+      ...values,
+    })
+    .run();
+  return `Added team "${input.name}".`;
+}
+
+function generateSchedule(input: Record<string, any>, ctx: Ctx) {
+  const t = db
+    .select()
+    .from(schema.tournaments)
+    .where(eq(schema.tournaments.id, ctx.tournamentId))
+    .get();
+  if (!t) return "Tournament not found.";
+
+  const accepted = db
+    .select()
+    .from(schema.teams)
+    .where(
+      and(
+        eq(schema.teams.tournamentId, ctx.tournamentId),
+        eq(schema.teams.status, "accepted"),
+      ),
+    )
+    .all();
+
+  if (accepted.length < 3) {
+    return `Only ${accepted.length} accepted team(s). Need at least 3 to build a format. ` +
+      `Accept teams first, or tell me the team count you're planning for and I'll model it.`;
+  }
+
+  const fields = input.fields ?? t.fieldCount ?? 4;
+  const days = input.days ?? 2;
+  const roundMinutes = input.roundMinutes ?? 120;
+  const roundsPerDay = input.roundsPerDay ?? 4;
+  const gameTo = input.gameTo ?? 15;
+
+  const fmt = buildFormat({
+    teams: accepted.length,
+    days,
+    fields,
+    roundMinutes,
+    hoursPerDay: (roundsPerDay * roundMinutes) / 60,
+    gameTo,
+  });
+
+  if (fmt.problems.length) {
+    return [
+      "That plan does not fit. The format manual's limits are being violated:",
+      ...fmt.problems.map((p) => `  - ${p}`),
+      "",
+      "Options: add a field, add hours or a day, play to 11 instead of 15, or " +
+        "reduce the field size. Which do you want?",
+    ].join("\n");
+  }
+
+  // Seed by explicit seed where set, otherwise by insertion order.
+  const seeded = [...accepted].sort(
+    (a, b) => (a.seed ?? 999) - (b.seed ?? 999),
+  );
+  const games = layOutSchedule(fmt, {
+    startTime: input.startTime ?? "09:00",
+    roundMinutes,
+    fields,
+    roundsPerDay,
+    days,
+    teamNames: seeded.map((t) => t.name),
+  });
+
+  const byName = new Map(seeded.map((t) => [t.name, t.id]));
+
+  db.delete(schema.games)
+    .where(eq(schema.games.tournamentId, ctx.tournamentId))
+    .run();
+
+  for (const g of games) {
+    db.insert(schema.games)
+      .values({
+        id: nanoid(),
+        tournamentId: ctx.tournamentId,
+        gameCode: g.gameId,
+        day: g.day,
+        round: g.round,
+        startTime: g.startTime,
+        field: String(g.field),
+        stage: g.stage,
+        pool: g.pool,
+        homeTeamId: byName.get(g.homeTeam) ?? null,
+        awayTeamId: byName.get(g.awayTeam) ?? null,
+        homeLabel: byName.has(g.homeTeam) ? null : g.homeTeam,
+        awayLabel: byName.has(g.awayTeam) ? null : g.awayTeam,
+      })
+      .run();
+  }
+
+  // Persist pool assignments back onto the teams.
+  for (const [poolName, seeds] of Object.entries(fmt.pools)) {
+    for (const seed of seeds) {
+      const team = seeded[seed - 1];
+      if (team) {
+        db.update(schema.teams)
+          .set({ pool: poolName, seed })
+          .where(eq(schema.teams.id, team.id))
+          .run();
+      }
+    }
+  }
+
+  const poolSummary = Object.entries(fmt.pools)
+    .map(([n, s]) => `Pool ${n}: ${s.map((x) => seeded[x - 1]?.name ?? x).join(", ")}`)
+    .join("\n  ");
+
+  return [
+    `Generated ${games.length} games for ${accepted.length} teams on ${fields} fields ` +
+      `over ${days} day(s).`,
+    `Guaranteed games per team: ${fmt.gamesGuaranteed}. Worst case: ` +
+      `${fmt.worstCaseGamesPerTeam}.`,
+    "",
+    "  " + poolSummary,
+    "",
+    "Schedule is live on the public page.",
+  ].join("\n");
+}
+
+function clockFrom(start: string, roundIndex: number, minutes: number) {
+  const [h, m] = start.split(":").map(Number);
+  const total = h * 60 + m + roundIndex * minutes;
+  return `${String(Math.floor(total / 60) % 24).padStart(2, "0")}:${String(
+    total % 60,
+  ).padStart(2, "0")}`;
+}
+
+function defineCustomFormat(input: Record<string, any>, ctx: Ctx) {
+  const t = db
+    .select()
+    .from(schema.tournaments)
+    .where(eq(schema.tournaments.id, ctx.tournamentId))
+    .get();
+  if (!t) return "Tournament not found.";
+
+  const teams = db
+    .select()
+    .from(schema.teams)
+    .where(
+      and(
+        eq(schema.teams.tournamentId, ctx.tournamentId),
+        eq(schema.teams.status, "accepted"),
+      ),
+    )
+    .all();
+  if (teams.length < 2) {
+    return `Only ${teams.length} accepted team(s). Accept teams before building a format.`;
+  }
+
+  const spec: CustomFormatSpec = {
+    name: input.name,
+    description: input.description,
+    pools: input.pools,
+    stages: input.stages,
+    gameTo: input.gameTo,
+  };
+
+  const teamNames = teams.map((x) => x.name);
+  const result = expand(spec, teamNames);
+
+  const fields = input.fields ?? t.fieldCount ?? 4;
+  const roundsPerDay = input.roundsPerDay ?? 4;
+  const days = input.days ?? 2;
+  const roundMinutes = input.roundMinutes ?? 120;
+  const startTime = input.startTime ?? "09:00";
+
+  const capacity = checkCapacity(result, { fields, roundsPerDay, days });
+
+  if (!result.ok || capacity.length) {
+    return [
+      `Format "${spec.name}" was NOT applied.`,
+      "",
+      ...(result.errors.length ? ["Errors:", ...result.errors.map((e) => `  - ${e}`)] : []),
+      ...(capacity.length ? ["Capacity:", ...capacity.map((e) => `  - ${e}`)] : []),
+      ...(result.warnings.length
+        ? ["", "Warnings:", ...result.warnings.map((w) => `  - ${w}`)]
+        : []),
+      "",
+      "Fix the errors and call again.",
+    ].join("\n");
+  }
+
+  const idByName = new Map(teams.map((x) => [x.name, x.id]));
+
+  db.delete(schema.games)
+    .where(eq(schema.games.tournamentId, ctx.tournamentId))
+    .run();
+
+  const perRound = new Map<number, number>();
+  for (const g of result.games) {
+    const used = perRound.get(g.round) ?? 0;
+    perRound.set(g.round, used + 1);
+    const day = Math.floor((g.round - 1) / roundsPerDay) + 1;
+    const slot = (g.round - 1) % roundsPerDay;
+
+    const homeId = idByName.get(g.home) ?? null;
+    const awayId = idByName.get(g.away) ?? null;
+
+    db.insert(schema.games)
+      .values({
+        id: nanoid(),
+        tournamentId: ctx.tournamentId,
+        gameCode: g.gameId,
+        day,
+        round: g.round,
+        startTime: clockFrom(startTime, slot, roundMinutes),
+        field: String(used + 1),
+        stage: g.stage,
+        pool: g.pool,
+        homeTeamId: homeId,
+        awayTeamId: awayId,
+        homeLabel: homeId ? null : g.home,
+        awayLabel: awayId ? null : g.away,
+      })
+      .run();
+  }
+
+  // Record pool assignments so standings group correctly.
+  for (const p of spec.pools ?? []) {
+    for (const name of p.teams) {
+      const id = idByName.get(name);
+      if (id) {
+        db.update(schema.teams)
+          .set({ pool: p.name })
+          .where(eq(schema.teams.id, id))
+          .run();
+      }
+    }
+  }
+
+  advanceTournament(ctx.tournamentId);
+
+  const counts = Object.values(result.gamesPerTeam);
+  return [
+    `Applied custom format "${spec.name}".`,
+    `${result.games.length} games over ${result.rounds} rounds on ${fields} fields.`,
+    counts.length
+      ? `Games per team: ${Math.min(...counts)}–${Math.max(...counts)}.`
+      : "",
+    ...(result.warnings.length
+      ? ["", "Warnings (applied anyway — your call):", ...result.warnings.map((w) => `  - ${w}`)]
+      : []),
+    "",
+    "Live on the public schedule. Placeholders resolve automatically as scores land.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function pairSwissRound(input: Record<string, any>, ctx: Ctx) {
+  const label = input.label ?? "Swiss";
+  const teams = db
+    .select()
+    .from(schema.teams)
+    .where(
+      and(
+        eq(schema.teams.tournamentId, ctx.tournamentId),
+        eq(schema.teams.status, "accepted"),
+      ),
+    )
+    .all();
+  const games = db
+    .select()
+    .from(schema.games)
+    .where(eq(schema.games.tournamentId, ctx.tournamentId))
+    .all();
+
+  const pending = games.filter((g) => g.status !== "final");
+  if (pending.length) {
+    return `${pending.length} game(s) are not final yet. Finish the round before pairing the next one.`;
+  }
+
+  const nameById = new Map(teams.map((t) => [t.id, t.name]));
+  const record = new Map<string, { w: number; diff: number }>();
+  for (const t of teams) record.set(t.id, { w: 0, diff: 0 });
+
+  const played = new Set<string>();
+  for (const g of games) {
+    if (g.status !== "final" || !g.homeTeamId || !g.awayTeamId) continue;
+    played.add([g.homeTeamId, g.awayTeamId].sort().join("|"));
+    const hs = g.homeScore ?? 0;
+    const as = g.awayScore ?? 0;
+    const h = record.get(g.homeTeamId);
+    const a = record.get(g.awayTeamId);
+    if (h) {
+      h.diff += hs - as;
+      if (hs > as) h.w++;
+    }
+    if (a) {
+      a.diff += as - hs;
+      if (as > hs) a.w++;
+    }
+  }
+
+  const ranked = [...record.entries()].sort(
+    ([, x], [, y]) => y.w - x.w || y.diff - x.diff,
+  );
+
+  // Greedy pairing down the standings, skipping rematches where possible.
+  const unpaired = ranked.map(([id]) => id);
+  const pairs: [string, string][] = [];
+  const rematches: string[] = [];
+  while (unpaired.length > 1) {
+    const a = unpaired.shift()!;
+    let idx = unpaired.findIndex(
+      (b) => !played.has([a, b].sort().join("|")),
+    );
+    if (idx === -1) {
+      idx = 0;
+      rematches.push(`${nameById.get(a)} v ${nameById.get(unpaired[0])}`);
+    }
+    const b = unpaired.splice(idx, 1)[0];
+    pairs.push([a, b]);
+  }
+  const bye = unpaired[0];
+
+  const nextRound = Math.max(0, ...games.map((g) => g.round ?? 0)) + 1;
+  const nextCode = games.length + 1;
+  const roundsPerDay = 4;
+  const day = Math.floor((nextRound - 1) / roundsPerDay) + 1;
+  const sample = games.find((g) => g.round === nextRound - 1);
+
+  pairs.forEach(([a, b], i) => {
+    db.insert(schema.games)
+      .values({
+        id: nanoid(),
+        tournamentId: ctx.tournamentId,
+        gameCode: `G${nextCode + i}`,
+        day,
+        round: nextRound,
+        startTime: sample?.startTime ?? "09:00",
+        field: String(i + 1),
+        stage: "pool",
+        pool: label,
+        homeTeamId: a,
+        awayTeamId: b,
+      })
+      .run();
+  });
+
+  return [
+    `Paired swiss round ${nextRound}: ${pairs.length} games.`,
+    ...pairs.map(
+      ([a, b], i) => `  F${i + 1}  ${nameById.get(a)} v ${nameById.get(b)}`,
+    ),
+    bye ? `  Bye: ${nameById.get(bye)}` : "",
+    rematches.length
+      ? `\nUnavoidable rematches: ${rematches.join(", ")}`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function draftOutreach(input: Record<string, any>, ctx: Ctx) {
+  db.insert(schema.outreach)
+    .values({
+      id: nanoid(),
+      tournamentId: ctx.tournamentId,
+      kind: input.kind,
+      toName: input.toName ?? null,
+      toEmail: input.toEmail,
+      subject: input.subject,
+      body: input.body,
+      status: "draft",
+    })
+    .run();
+  return (
+    `Drafted "${input.subject}" to ${input.toEmail}. It is queued for your approval ` +
+    `and will not send until you approve it.`
+  );
+}
+
+function addSponsor(input: Record<string, any>, ctx: Ctx) {
+  const existing = db
+    .select()
+    .from(schema.sponsors)
+    .where(
+      and(
+        eq(schema.sponsors.tournamentId, ctx.tournamentId),
+        eq(schema.sponsors.org, input.org),
+      ),
+    )
+    .get();
+
+  const values: Record<string, unknown> = {};
+  for (const k of [
+    "contactName", "email", "phone", "type", "stage", "inkindDescription",
+    "tier", "notes",
+  ]) {
+    if (input[k] !== undefined) values[k] = input[k];
+  }
+  if (input.amount !== undefined) values.amount = Math.round(input.amount * 100);
+
+  if (existing) {
+    db.update(schema.sponsors)
+      .set(values)
+      .where(eq(schema.sponsors.id, existing.id))
+      .run();
+    return `Updated sponsor "${input.org}".`;
+  }
+  db.insert(schema.sponsors)
+    .values({
+      id: nanoid(),
+      tournamentId: ctx.tournamentId,
+      org: input.org,
+      ...values,
+    })
+    .run();
+  return `Added sponsor prospect "${input.org}".`;
+}
+
+function manageWaiver(input: Record<string, any>, ctx: Ctx) {
+  const t = db
+    .select()
+    .from(schema.tournaments)
+    .where(eq(schema.tournaments.id, ctx.tournamentId))
+    .get();
+  if (!t) return "Tournament not found.";
+
+  const existing = db
+    .select()
+    .from(schema.waivers)
+    .where(eq(schema.waivers.tournamentId, ctx.tournamentId))
+    .all();
+
+  if (input.action === "list") {
+    if (!existing.length) {
+      return [
+        "No waivers yet. Available templates:",
+        ...TEMPLATES.map((x) => `  ${x.key} — ${x.title}: ${x.description}`),
+        "",
+        LEGAL_DISCLAIMER,
+      ].join("\n");
+    }
+    return [
+      "Waivers on this tournament:",
+      ...existing.map(
+        (w) => `  ${w.id} — "${w.title}" (${w.audience}, v${w.version})`,
+      ),
+    ].join("\n");
+  }
+
+  if (input.action === "create") {
+    const tpl = templateByKey(input.templateKey);
+    if (!tpl) {
+      return `Unknown template "${input.templateKey}". Available: ${TEMPLATES.map((x) => x.key).join(", ")}.`;
+    }
+    if (existing.some((w) => w.templateKey === tpl.key)) {
+      return `A "${tpl.title}" already exists on this tournament. Rewrite it instead.`;
+    }
+    const body = fillTemplate(tpl.body, {
+      tournament_name: t.name,
+      dates: formatDateRange(t.startDate, t.endDate) ?? undefined,
+      venue: t.venueName ?? undefined,
+      venue_owner: t.venueName ?? undefined,
+      roster_deadline: t.rosterDeadline ?? undefined,
+      payment_deadline: t.paymentDeadline ?? undefined,
+      bid_fee: t.bidFee ? `$${(t.bidFee / 100).toFixed(0)}` : undefined,
+    });
+    const id = nanoid();
+    db.insert(schema.waivers)
+      .values({
+        id,
+        tournamentId: ctx.tournamentId,
+        title: input.title ?? tpl.title,
+        body,
+        audience: tpl.audience,
+        templateKey: tpl.key,
+      })
+      .run();
+    return [
+      `Created "${input.title ?? tpl.title}" (id ${id}).`,
+      "Participants can sign it now on the public waiver page.",
+      "",
+      LEGAL_DISCLAIMER,
+    ].join("\n");
+  }
+
+  if (input.action === "rewrite") {
+    const w = existing.find((x) => x.id === input.waiverId);
+    if (!w) {
+      return `No waiver with id "${input.waiverId}". Call with action "list" first.`;
+    }
+    const patch: Record<string, unknown> = {
+      updatedAt: Math.floor(Date.now() / 1000),
+    };
+    if (input.title) patch.title = input.title;
+    if (input.required !== undefined) patch.required = input.required;
+    if (input.body && input.body !== w.body) {
+      patch.body = input.body;
+      patch.version = w.version + 1;
+    }
+    db.update(schema.waivers)
+      .set(patch)
+      .where(eq(schema.waivers.id, w.id))
+      .run();
+
+    const signed = db
+      .select()
+      .from(schema.waiverSignatures)
+      .where(eq(schema.waiverSignatures.waiverId, w.id))
+      .all();
+
+    return [
+      `Updated "${input.title ?? w.title}"${patch.version ? ` to v${patch.version}` : ""}.`,
+      signed.length
+        ? `${signed.length} existing signature(s) keep a snapshot of the text they ` +
+          `actually agreed to — they are unaffected.`
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  return 'Unknown action. Use "list", "create", or "rewrite".';
+}
+
+function postAnnouncement(input: Record<string, any>, ctx: Ctx) {
+  db.insert(schema.announcements)
+    .values({
+      id: nanoid(),
+      tournamentId: ctx.tournamentId,
+      body: input.body,
+      level: input.level ?? "info",
+      broadcastTelegram: !!input.broadcastTelegram,
+    })
+    .run();
+  return input.broadcastTelegram
+    ? "Posted to the tournament page and queued for the Telegram group."
+    : "Posted to the tournament page.";
+}
+
+function getStatus(ctx: Ctx) {
+  const t = db
+    .select()
+    .from(schema.tournaments)
+    .where(eq(schema.tournaments.id, ctx.tournamentId))
+    .get();
+  if (!t) return "Tournament not found.";
+
+  const teams = db
+    .select()
+    .from(schema.teams)
+    .where(eq(schema.teams.tournamentId, ctx.tournamentId))
+    .all();
+  const sponsorRows = db
+    .select()
+    .from(schema.sponsors)
+    .where(eq(schema.sponsors.tournamentId, ctx.tournamentId))
+    .all();
+  const taskRows = db
+    .select()
+    .from(schema.tasks)
+    .where(eq(schema.tasks.tournamentId, ctx.tournamentId))
+    .all();
+  const gameRows = db
+    .select()
+    .from(schema.games)
+    .where(eq(schema.games.tournamentId, ctx.tournamentId))
+    .all();
+
+  const today = new Date().toISOString().slice(0, 10);
+  const open = taskRows.filter((x) => !x.done);
+  const late = open.filter((x) => x.dueDate && x.dueDate < today);
+  const next = open
+    .filter((x) => x.dueDate && x.dueDate >= today)
+    .sort((a, b) => (a.dueDate ?? "").localeCompare(b.dueDate ?? ""))
+    .slice(0, 5);
+
+  const count = (s: string) => teams.filter((x) => x.status === s).length;
+
+  const facts = [
+    ["Name", t.name],
+    ["Dates", t.startDate ? `${t.startDate} to ${t.endDate ?? t.startDate}` : "NOT SET"],
+    ["Venue", t.venueName ?? "NOT SET"],
+    ["Fields", t.fieldCount ?? "NOT SET"],
+    ["Division", t.division ?? "NOT SET"],
+    ["Team target", t.teamTarget ?? "NOT SET"],
+    ["Bid fee", t.bidFee ? `$${(t.bidFee / 100).toFixed(0)}` : "NOT SET"],
+    ["Sanctioned", t.sanctioned ? "yes" : "no"],
+    ["Refund policy", t.refundPolicy ? "written" : "NOT WRITTEN"],
+    ["Published", t.published ? "yes" : "no"],
+  ]
+    .map(([k, v]) => `  ${k}: ${v}`)
+    .join("\n");
+
+  const lines = [
+    "TOURNAMENT",
+    facts,
+    "",
+    "TEAMS",
+    `  applied ${count("applied")} | accepted ${count("accepted")} | ` +
+      `waitlisted ${count("waitlisted")} | paid ${teams.filter((x) => x.feePaid).length}`,
+    "",
+    "SPONSORS",
+    `  ${sponsorRows.length} in pipeline | ` +
+      `committed ${sponsorRows.filter((s) => ["committed", "paid"].includes(s.stage)).length}`,
+    "",
+    "SCHEDULE",
+    `  ${gameRows.length} games generated | ` +
+      `${gameRows.filter((g) => g.status === "final").length} final`,
+    "",
+    "TASKS",
+    `  ${open.length} open, ${late.length} late`,
+  ];
+
+  if (late.length) {
+    lines.push("", "  LATE:");
+    for (const x of late.slice(0, 8)) lines.push(`    - ${x.task} (due ${x.dueDate})`);
+  }
+  if (next.length) {
+    lines.push("", "  NEXT UP:");
+    for (const x of next) lines.push(`    - ${x.dueDate} ${x.task} (${x.owner})`);
+  }
+  return lines.join("\n");
+}

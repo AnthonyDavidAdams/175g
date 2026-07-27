@@ -1,0 +1,230 @@
+@import "tailwindcss";
+
+@theme {
+  --color-canvas: #08090b;
+  --color-surface: #0e1014;
+  --color-line: rgba(255, 255, 255, 0.09);
+  --color-line-strong: rgba(255, 255, 255, 0.16);
+  --color-text: #e8eaed;
+  --color-dim: #8b929d;
+  --color-faint: #5a616b;
+  --color-signal: #d4fe4f;
+  --color-warn: #ffb020;
+  --color-alert: #ff5f45;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+* {
+  border-color: var(--color-line);
+}
+
+body {
+  background: var(--color-canvas);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow-x: hidden;
+}
+
+/* Dot grid plus a single soft light source. The texture that makes a dark
+   canvas read as a surface rather than a void. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image: radial-gradient(
+    circle at 1px 1px,
+    rgba(255, 255, 255, 0.055) 1px,
+    transparent 0
+  );
+  background-size: 28px 28px;
+  mask-image: radial-gradient(ellipse 90% 60% at 50% 0%, #000 20%, transparent 75%);
+  -webkit-mask-image: radial-gradient(ellipse 90% 60% at 50% 0%, #000 20%, transparent 75%);
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  top: -30vh;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 80vw;
+  height: 70vh;
+  pointer-events: none;
+  z-index: 0;
+  background: radial-gradient(
+    ellipse at center,
+    rgba(212, 254, 79, 0.07) 0%,
+    transparent 65%
+  );
+  filter: blur(40px);
+}
+
+main,
+.layer {
+  position: relative;
+  z-index: 1;
+}
+
+/* --- Type marks ---------------------------------------------------------- */
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-faint);
+}
+
+.display {
+  letter-spacing: -0.035em;
+  line-height: 0.98;
+  font-weight: 560;
+}
+
+.tabular {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Surfaces ------------------------------------------------------------ */
+
+.panel {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.028),
+    rgba(255, 255, 255, 0.008)
+  );
+  border: 1px solid var(--color-line);
+  border-radius: 10px;
+}
+
+.panel-hover {
+  transition:
+    border-color 160ms ease,
+    background-color 160ms ease;
+}
+
+.panel-hover:hover {
+  border-color: var(--color-line-strong);
+  background-color: rgba(255, 255, 255, 0.035);
+}
+
+/* Hairline rule that fades at both ends: a scan line, not a border. */
+.rule {
+  height: 1px;
+  border: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--color-line-strong) 15%,
+    var(--color-line-strong) 85%,
+    transparent
+  );
+}
+
+/* --- Controls ------------------------------------------------------------ */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  border-radius: 7px;
+  padding: 0.6rem 1.05rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: all 160ms ease;
+}
+
+.btn-primary {
+  background: var(--color-signal);
+  color: #0a0c05;
+}
+
+.btn-primary:hover {
+  box-shadow:
+    0 0 0 1px var(--color-signal),
+    0 0 28px -6px rgba(212, 254, 79, 0.55);
+}
+
+.btn-ghost {
+  border: 1px solid var(--color-line-strong);
+  color: var(--color-text);
+}
+
+.btn-ghost:hover {
+  background: rgba(255, 255, 255, 0.045);
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+.field {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--color-line);
+  border-radius: 7px;
+  padding: 0.6rem 0.8rem;
+  font-size: 0.9375rem;
+  color: var(--color-text);
+  transition: border-color 160ms ease;
+}
+
+.field:focus {
+  outline: none;
+  border-color: rgba(212, 254, 79, 0.55);
+  box-shadow: 0 0 0 3px rgba(212, 254, 79, 0.09);
+}
+
+.field::placeholder {
+  color: var(--color-faint);
+}
+
+/* --- Status -------------------------------------------------------------- */
+
+.live::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 0.45rem;
+  border-radius: 999px;
+  background: var(--color-signal);
+  animation: pulse 2.2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgba(212, 254, 79, 0.5);
+  }
+  50% {
+    opacity: 0.55;
+    box-shadow: 0 0 0 5px rgba(212, 254, 79, 0);
+  }
+}
+
+/* Wide content scrolls in its own container so the page never scrolls
+   horizontally on a phone at the fields. */
+.scroll-x {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
