@@ -1,13 +1,16 @@
 # 175g
 
-An AI tournament director for college ultimate frisbee. Multi-tenant, free for
-college teams, hosted at 175g.com.
+An AI tournament director for ultimate frisbee. Multi-tenant, and free for
+college and community tournaments.
 
 The name is the weight of a regulation disc.
 
+**Licence: AGPL-3.0.** Fork it, self-host it for your league, send a pull request.
+If you run a modified version as a service, share those changes back.
+
 ## What it is
 
-Most college tournaments are run by a sophomore who has never done it before.
+Most college tournaments are run by a student who has never done it before.
 175g is a tournament director that already knows how — a conversational agent
 that does the work with the TD, from the first field email to the archive handed
 to next year's TD.
@@ -15,6 +18,17 @@ to next year's TD.
 The agent is the product. It has tools that mutate the real tournament: it sets
 dates, generates the deadline countdown, adds teams, builds a USAU-compliant
 schedule, drafts outreach for approval, tracks sponsors, and posts announcements.
+
+## Who built this
+
+In 2001 the UPA — now USA Ultimate — brought the author out to headquarters to
+teach their staff the frameworks for organising tournaments at the professional
+level. He also founded Don't Give Up the Disc, now in its 26th year and one of
+the best beach tournaments in the world.
+
+The domain logic here is that experience written down, checked against the
+published manuals rather than recalled from memory. Where the two disagree, the
+manual wins and the code cites it.
 
 ## Architecture
 
@@ -25,9 +39,9 @@ src/
     login/                      magic-link sign-in
     dashboard/                  a TD's tournaments
     t/[org]/[slug]/             PUBLIC: info, schedule, standings, teams,
-                                apply, volunteer
-    td/[org]/[slug]/            PRIVATE: agent console, score entry,
-                                outreach approval queue
+                                apply, volunteer, waiver
+    td/[org]/[slug]/            PRIVATE: agent console, score entry, outreach
+                                queue, field map, waivers, access
     api/
       agent/[org]/[slug]/       the TD agent turn loop
       auth/{request,verify}/    magic link issue + consume
@@ -35,13 +49,20 @@ src/
       volunteer/[org]/[slug]/   shift signup
       scores/[gameId]/          score entry
       outreach/[id]/            approve-and-send or discard
+      waivers/[org]/[slug]/     manage templates, and public signing
+      fields/[org]/[slug]/      save the field layout
+      access/[org]/             add and remove org members
       telegram/                 bot webhook
   lib/
     db/schema.ts                Drizzle schema (see Tenancy below)
     agent/{tools,runner}.ts     tool definitions + the turn loop
-    formats.ts                  pools, seeding, brackets, round layout
+    formats.ts                  USAU pools, seeding, brackets, round layout
+    customFormat.ts             everything the USAU library doesn't cover
+    advance.ts                  resolves bracket placeholders as scores land
     standings.ts                USAU nine-rule tiebreak engine
     timeline.ts                 dynamic deadline countdown
+    waiverTemplates.ts          editable waiver drafts
+    fieldGeometry.ts            true-scale field polygons from centre + bearing
     telegram.ts                 score reporting and broadcast
     auth.ts                     magic link + 60-day trusted device
     seo.ts                      buildMetadata — every page ships full OG
@@ -89,6 +110,47 @@ The tiebreak engine is verified against the manual's own worked examples 3.1,
 3.2, and 4.1, in both the TypeScript (`src/lib/standings.ts`) and Python
 (`pull-suite` plugin) implementations.
 
+## Custom formats
+
+`generate_schedule` covers the standard shapes. `define_custom_format` covers
+everything else: hat tournaments, swiss, three-team pools into crossovers,
+showcase games, split divisions, double round robins, consolation ladders,
+beach 2:2.
+
+Validation separates errors from warnings on purpose. Structural impossibilities
+block — a team playing itself, a team in two games in one round, a placeholder
+pointing at nothing. Departures from USAU guidance are surfaced as warnings and
+applied anyway, because a custom format is a deliberate choice by someone who
+knows their event.
+
+Consecutive round-robin stages on different pools interleave into shared rounds,
+so three pools of three is five rounds, not eleven.
+
+Game sides accept placeholders that resolve as results land: `A1` (pool A first
+place), `W:G12`, `L:G12`. `advance.ts` fills them in after every score from any
+source. Pool placings resolve only once the whole pool is final, because the
+tiebreak procedure can reorder a pool on the last result.
+
+## Waivers
+
+Four editable templates — participant, parent/guardian for minors, team
+agreement, volunteer. Both the TD and the agent can rewrite them.
+
+Each signature stores `bodySnapshot` and `versionSigned`, so editing a waiver
+never rewrites what somebody already agreed to. Every surface says plainly that
+the templates are a starting point and not legal advice.
+
+## Field layout
+
+`fieldGeometry.ts` stores a field as a centre point, a bearing, and dimensions in
+metres, then derives the corners. A field is therefore always exactly regulation
+size however it is dragged or rotated, and the map matches what gets lined on the
+grass. Spacing warnings fire below 5m, and again below 9m, because the minimum
+buffer does not leave room for team tents.
+
+The map uses Esri World Imagery rather than Google Maps — no API key, which
+matters for anyone self-hosting.
+
 ## Telegram
 
 One group per tournament. Bind it once with `/link <slug>`, then:
@@ -126,6 +188,6 @@ runs the idempotent seed, and starts Next. Set the env vars in `.env.example`.
 
 ## Companion plugin
 
-`~/pull-suite` is the Claude Code plugin version of the same knowledge — twelve
-skills and six Python tools a TD can run locally. The plugin's skill files are
-the source of the agent's playbook.
+`pull-suite` is the Claude Code plugin version of the same knowledge — thirteen
+skills and six dependency-free Python tools a TD can run locally. The plugin's
+skill files are the source of the agent's playbook.

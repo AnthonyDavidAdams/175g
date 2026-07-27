@@ -183,16 +183,22 @@ export default function Home() {
             nine-rule procedure, verified against the manual&apos;s own worked examples.
           </p>
           <p className="mt-4 max-w-2xl leading-relaxed text-[var(--color-dim)]">
-            Built by the founder of Don&apos;t Give Up the Disc — now in its 26th
-            year and one of the best beach tournaments in the world — who has spent
-            a quarter century organising ultimate at every level from a first
-            college event to professional competition.
+            It also isn&apos;t theoretical. In 2001 the UPA — now USA Ultimate —
+            brought its author out to headquarters to teach their staff the
+            frameworks for organising tournaments at the professional level. Those
+            frameworks went on to shape how a lot of local communities run their
+            events. He also founded Don&apos;t Give Up the Disc, now in its 26th year
+            and one of the best beach tournaments in the world.
+          </p>
+          <p className="mt-4 max-w-2xl leading-relaxed text-[var(--color-dim)]">
+            175g is that quarter century of tournament directing, written down and
+            handed to whoever is running yours.
           </p>
           <div className="mt-10 grid gap-6 sm:grid-cols-3">
             {[
-              ["3–24+", "team formats encoded"],
+              ["2001", "taught tournament frameworks at UPA HQ"],
+              ["26", "years of Don't Give Up the Disc"],
               ["9", "tiebreak rules, in order"],
-              ["26", "years running tournaments"],
             ].map(([stat, label]) => (
               <div key={label}>
                 <div className="tabular text-4xl text-[var(--color-signal)]">
