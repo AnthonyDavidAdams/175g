@@ -201,6 +201,41 @@ export default function FieldMap({
           leaflet.DomEvent.stop(e);
           setSelected({ type: "field", index: i });
         })
+        // Drag anywhere on the field, not just the little label. Leaflet
+        // polygons aren't draggable, so pan the shape by hand: freeze the map,
+        // follow the pointer, restore on release.
+        .on("mousedown", (e: L.LeafletMouseEvent) => {
+          if (modeRef.current.tool === "marker") return;
+          const map = mapRef.current;
+          if (!map) return;
+          leaflet.DomEvent.stop(e);
+          setSelected({ type: "field", index: i });
+
+          const start = e.latlng;
+          const origin = { lat: f.centerLat, lng: f.centerLng };
+          map.dragging.disable();
+
+          const onMove = (ev: L.LeafletMouseEvent) => {
+            setFields((prev) =>
+              prev.map((x, j) =>
+                j === i
+                  ? {
+                      ...x,
+                      centerLat: origin.lat + (ev.latlng.lat - start.lat),
+                      centerLng: origin.lng + (ev.latlng.lng - start.lng),
+                    }
+                  : x,
+              ),
+            );
+          };
+          const onUp = () => {
+            map.off("mousemove", onMove);
+            map.off("mouseup", onUp);
+            map.dragging.enable();
+          };
+          map.on("mousemove", onMove);
+          map.on("mouseup", onUp);
+        })
         .addTo(layer);
 
       for (const line of shape.endzoneLines) {
@@ -542,6 +577,74 @@ export default function FieldMap({
                 ))}
               </select>
             </label>
+            <label className="block">
+              <span className="mono">Total length (m)</span>
+              <input
+                type="number"
+                min={20}
+                max={200}
+                value={activeField.lengthM}
+                onChange={(e) =>
+                  patchField(selected.index, {
+                    preset: "custom",
+                    lengthM: Number(e.target.value) || activeField.lengthM,
+                  })
+                }
+                className="field mt-2"
+              />
+            </label>
+            <label className="block">
+              <span className="mono">Width (m)</span>
+              <input
+                type="number"
+                min={10}
+                max={100}
+                value={activeField.widthM}
+                onChange={(e) =>
+                  patchField(selected.index, {
+                    preset: "custom",
+                    widthM: Number(e.target.value) || activeField.widthM,
+                  })
+                }
+                className="field mt-2"
+              />
+            </label>
+            <label className="block">
+              <span className="mono">End zone depth (m)</span>
+              <input
+                type="number"
+                min={2}
+                max={40}
+                value={activeField.endzoneM}
+                onChange={(e) =>
+                  patchField(selected.index, {
+                    preset: "custom",
+                    endzoneM: Number(e.target.value) || activeField.endzoneM,
+                  })
+                }
+                className="field mt-2"
+              />
+            </label>
+            <label className="block">
+              <span className="mono">Apply this size to</span>
+              <button
+                type="button"
+                onClick={() =>
+                  setFields((prev) =>
+                    prev.map((x) => ({
+                      ...x,
+                      preset: activeField.preset,
+                      lengthM: activeField.lengthM,
+                      widthM: activeField.widthM,
+                      endzoneM: activeField.endzoneM,
+                    })),
+                  )
+                }
+                className="btn btn-ghost mt-2 w-full justify-center !py-2 !text-xs"
+              >
+                All {fields.length} fields
+              </button>
+            </label>
             <label className="block sm:col-span-2">
               <span className="mono">
                 Rotation — {activeField.bearing}° · drag the dot on the map to spin it
@@ -633,10 +736,11 @@ export default function FieldMap({
       )}
 
       <p className="mono mt-6 normal-case tracking-normal">
-        Pick a tool, then click the map · drag anything to move it · drag the dot to
-        rotate a field · Delete removes the selection. Fields are drawn at true size —
-        100×37m is 91% the length of an American football field, so they should look
-        large. Check against the scale bar.
+        Pick a tool, then click the map · drag a field anywhere on its surface to
+        move it · drag the dot to rotate · Delete removes the selection. Fields are
+        drawn at true size — a standard 100×37m field is 91% the length of an
+        American football field, so it should look large. Check against the scale
+        bar in the corner.
       </p>
     </div>
   );

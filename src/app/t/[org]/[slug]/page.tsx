@@ -53,6 +53,7 @@ export default async function TournamentPage({ params }: Params) {
     ["Apply", `/t/${org}/${slug}/apply`],
     ["Volunteer", `/t/${org}/${slug}/volunteer`],
     ["Waiver", `/t/${org}/${slug}/waiver`],
+    ["Handout", `/t/${org}/${slug}/handout`],
   ];
 
   return (

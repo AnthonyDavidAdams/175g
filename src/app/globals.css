@@ -228,3 +228,239 @@ main,
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * Printed handout
+ *
+ * Forced to light ink on white regardless of the viewer's theme: this is
+ * intended to come out of a laser printer, get laminated, and survive a
+ * photocopier. Dark backgrounds would empty a toner cartridge per tournament.
+ * ------------------------------------------------------------------------- */
+
+.handout {
+  max-width: 48rem;
+  margin: 0 auto;
+  padding: 1.5rem;
+  color: #111;
+}
+
+.handout .page {
+  background: #fff;
+  color: #111;
+  padding: 2rem;
+  margin-bottom: 1.5rem;
+  border-radius: 8px;
+}
+
+.handout h1 {
+  font-size: 1.9rem;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+}
+
+.handout h2 {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #555;
+  margin-bottom: 0.5rem;
+  border-bottom: 1px solid #ddd;
+  padding-bottom: 0.25rem;
+}
+
+.handout h2.big {
+  font-size: 0.8rem;
+}
+
+.handout h3 {
+  font-weight: 650;
+  font-size: 0.85rem;
+  margin-bottom: 0.15rem;
+}
+
+.handout .head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1.5rem;
+  border-bottom: 2px solid #111;
+  padding-bottom: 0.85rem;
+  margin-bottom: 1.1rem;
+}
+
+.handout .sub {
+  color: #444;
+  margin-top: 0.3rem;
+  font-size: 0.9rem;
+}
+
+.handout .qr {
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.handout .qr img {
+  width: 92px;
+  height: 92px;
+  display: block;
+}
+
+.handout .qr span {
+  font-family: var(--font-mono);
+  font-size: 0.55rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #555;
+  display: block;
+  margin-top: 0.25rem;
+}
+
+.handout .block {
+  margin-bottom: 1.1rem;
+}
+
+.handout .cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.4rem;
+}
+
+.handout ol,
+.handout ul {
+  font-size: 0.82rem;
+  line-height: 1.5;
+  padding-left: 1.1rem;
+}
+
+.handout ol {
+  list-style: decimal;
+}
+
+.handout ul {
+  list-style: disc;
+}
+
+.handout li {
+  margin-bottom: 0.2rem;
+}
+
+.handout table {
+  width: 100%;
+  font-size: 0.8rem;
+  border-collapse: collapse;
+}
+
+.handout td {
+  padding: 0.18rem 0.35rem;
+  border-bottom: 1px solid #eee;
+}
+
+.handout .dim {
+  color: #666;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+
+.handout .right {
+  text-align: right;
+}
+
+.handout .center {
+  text-align: center;
+}
+
+.handout .score {
+  border: 1px solid #bbb;
+  width: 3.2rem;
+}
+
+.handout .facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.6rem;
+  border-top: 1px solid #ddd;
+  padding-top: 0.7rem;
+}
+
+.handout dt {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #666;
+}
+
+.handout dd {
+  font-size: 0.88rem;
+  margin-top: 0.1rem;
+}
+
+.handout .map {
+  border: 1px solid #ddd;
+  margin-bottom: 1.1rem;
+}
+
+.handout .tiny {
+  font-size: 0.72rem;
+  color: #555;
+  margin-top: 0.4rem;
+}
+
+.handout .pre {
+  white-space: pre-line;
+}
+
+.handout .foot {
+  border-top: 1px solid #ddd;
+  margin-top: 1rem;
+  padding-top: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #666;
+}
+
+@media print {
+  @page {
+    size: auto;
+    margin: 12mm;
+  }
+
+  html,
+  body {
+    background: #fff !important;
+  }
+
+  body::before,
+  body::after {
+    display: none !important;
+  }
+
+  .noprint {
+    display: none !important;
+  }
+
+  .handout {
+    max-width: none;
+    padding: 0;
+  }
+
+  .handout .page {
+    padding: 0;
+    margin: 0;
+    page-break-after: always;
+  }
+
+  .handout .page:last-child {
+    page-break-after: auto;
+  }
+
+  .handout .block,
+  .handout .map {
+    break-inside: avoid;
+  }
+}
