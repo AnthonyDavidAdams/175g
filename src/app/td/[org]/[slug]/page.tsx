@@ -111,6 +111,12 @@ export default async function TdPage({ params }: Params) {
           >
             Access
           </Link>
+          <Link
+            href={`/td/${org}/${slug}/doc`}
+            className="mono hover:text-[var(--color-signal)]"
+          >
+            Document
+          </Link>
         </nav>
       </div>
 

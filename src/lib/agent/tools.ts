@@ -7,6 +7,7 @@ import { checkCapacity, expand, type CustomFormatSpec } from "../customFormat";
 import { buildFormat, layOutSchedule } from "../formats";
 import { allocate, fieldCountWarnings } from "../multiDivision";
 import { describeSites, travelWarnings } from "../multiSite";
+import { applyDoc, toDoc } from "../tournamentDoc";
 import { buildTimeline } from "../timeline";
 import { formatDateRange } from "../tournament";
 import {
@@ -446,6 +447,56 @@ export const TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "get_tournament_doc",
+    description:
+      "Export the entire tournament as one JSON document — venue, sites, fields " +
+      "with real geometry, markers, teams, the full schedule, waivers, tasks, " +
+      "sponsors. Use it to read the whole state at once, to show the TD what " +
+      "they have, or as the basis for a bulk edit.\n\n" +
+      "Captain contact details are redacted unless includeContacts is set, and " +
+      "it never contains rosters, waiver signatures, or consent flags. The " +
+      "default export is safe to paste into a chat or save to a file; only ask " +
+      "for contacts when the TD wants a real backup or a platform migration.",
+    input_schema: {
+      type: "object",
+      properties: {
+        includeContacts: {
+          type: "boolean",
+          description: "Include captain emails and phones. Personal data — ask first.",
+        },
+        section: {
+          type: "string",
+          description:
+            "Optional: return just one section — tournament, sites, fields, " +
+            "markers, teams, schedule, waivers, tasks, sponsors.",
+        },
+      },
+    },
+  },
+  {
+    name: "apply_tournament_doc",
+    description:
+      "Apply a tournament document, replacing the collections it contains. This " +
+      "is the most powerful override available: anything the system can express, " +
+      "you can write directly.\n\n" +
+      "ALWAYS call with dryRun true first and show the TD the report. It " +
+      "separates ordinary changes from destructive ones. Applying is refused " +
+      "outright if it would erase played results or waivers that people have " +
+      "signed, unless allowDestructive is set — and you should only set that " +
+      "after the TD has explicitly confirmed they mean it.\n\n" +
+      "Send the complete document, not a fragment: collections you omit are " +
+      "treated as empty.",
+    input_schema: {
+      type: "object",
+      properties: {
+        doc: { type: "object", description: "The complete tournament document." },
+        dryRun: { type: "boolean" },
+        allowDestructive: { type: "boolean" },
+      },
+      required: ["doc"],
+    },
+  },
+  {
     name: "get_status",
     description:
       "Read the current state of the tournament: facts, team counts by status, " +
@@ -493,6 +544,10 @@ export async function runTool(
       return manageWaiver(input, ctx);
     case "post_announcement":
       return postAnnouncement(input, ctx);
+    case "get_tournament_doc":
+      return getTournamentDoc(input, ctx);
+    case "apply_tournament_doc":
+      return applyTournamentDoc(input, ctx);
     case "get_status":
       return getStatus(ctx);
     default:
@@ -1821,6 +1876,63 @@ function postAnnouncement(input: Record<string, any>, ctx: Ctx) {
   return input.broadcastTelegram
     ? "Posted to the tournament page and queued for the Telegram group."
     : "Posted to the tournament page.";
+}
+
+
+function getTournamentDoc(input: Record<string, any>, ctx: Ctx) {
+  const doc = toDoc(ctx.tournamentId, {
+    includeContacts: !!input.includeContacts,
+  }) as Record<string, unknown>;
+  if (input.section) {
+    if (!(input.section in doc)) {
+      return `Unknown section "${input.section}". Sections: ${Object.keys(doc).join(", ")}.`;
+    }
+    return JSON.stringify({ [input.section]: doc[input.section] }, null, 2);
+  }
+  return JSON.stringify(doc, null, 2);
+}
+
+function applyTournamentDoc(input: Record<string, any>, ctx: Ctx) {
+  const report = applyDoc(ctx.tournamentId, input.doc, {
+    dryRun: !!input.dryRun,
+    allowDestructive: !!input.allowDestructive,
+  });
+
+  const lines: string[] = [];
+  lines.push(
+    report.applied
+      ? "APPLIED."
+      : report.ok
+        ? "DRY RUN — nothing changed."
+        : "NOT APPLIED.",
+  );
+
+  if (report.errors.length) {
+    lines.push("", "Errors:", ...report.errors.map((e) => `  - ${e}`));
+  }
+  if (report.destructive.length) {
+    lines.push("", "DESTRUCTIVE:", ...report.destructive.map((e) => `  - ${e}`));
+  }
+  if (report.warnings.length) {
+    lines.push("", "Warnings:", ...report.warnings.map((e) => `  - ${e}`));
+  }
+  if (report.changes.length) {
+    lines.push("", "Changes:", ...report.changes.map((e) => `  - ${e}`));
+  } else if (report.ok) {
+    lines.push("", "No differences from the current state.");
+  }
+
+  if (!report.applied && report.ok) {
+    lines.push("", "Show this to the TD, then call again without dryRun.");
+  }
+  if (report.destructive.length && !report.applied) {
+    lines.push(
+      "",
+      "Do not set allowDestructive unless the TD has explicitly confirmed they " +
+        "want those records gone.",
+    );
+  }
+  return lines.join("\n");
 }
 
 function getStatus(ctx: Ctx) {
