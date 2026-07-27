@@ -9,7 +9,7 @@ import {
   presetByKey,
   spacingWarnings,
 } from "@/lib/fieldGeometry";
-import { SITE_ICONS, iconByKind, iconSvg } from "@/lib/siteIcons";
+import { SITE_ICONS, iconByKind, iconSvg, mapPin } from "@/lib/siteIcons";
 
 /**
  * Field and site-map placement on real satellite imagery, at true scale.
@@ -78,9 +78,9 @@ export default function FieldMap({
   const [saving, setSaving] = useState(false);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<
-    { label: string; lat: number; lng: number }[]
+    { label: string; lat: number; lng: number; interpreted?: string; why?: string }[]
   >([]);
-  const [searching, setSearching] = useState(false);
+  const [searching, setSearching] = useState<"plain" | "smart" | null>(null);
 
   // The map click handler is registered once, so it reads the live mode from a
   // ref rather than closing over a stale value.
@@ -285,14 +285,8 @@ export default function FieldMap({
           draggable: true,
           icon: leaflet.divIcon({
             className: "",
-            html: `<div style="
-              transform:translate(-50%,-50%);
-              display:flex;align-items:center;gap:5px;
-              background:${active ? "#d4fe4f" : "#ffb020"};
-              border:${active ? "2px solid #08090b" : "1px solid #00000033"};
-              padding:3px 7px;border-radius:5px;white-space:nowrap;
-              font:600 11px ui-monospace,monospace;color:#08090b;cursor:pointer;
-            ">${iconSvg(p.kind, 14)}<span>${p.label}</span></div>`,
+            iconSize: [0, 0],
+            html: mapPin(p.kind, p.label, active),
           }),
         })
         .on("click", (e: L.LeafletMouseEvent) => {
@@ -329,6 +323,29 @@ export default function FieldMap({
     return () => window.removeEventListener("keydown", onKey);
   }, [selected]);
 
+  async function runSearch(kind: "plain" | "smart") {
+    if (query.trim().length < 3) return;
+    setSearching(kind);
+    setStatus(null);
+    const url =
+      kind === "smart"
+        ? `/api/geocode/smart?q=${encodeURIComponent(query)}`
+        : `/api/geocode?q=${encodeURIComponent(query)}`;
+    const res = await fetch(url);
+    const data = await res.json().catch(() => ({ results: [] }));
+    setResults(data.results ?? []);
+    setSearching(null);
+    if (!data.results?.length) {
+      setStatus(
+        data.error ??
+          data.note ??
+          (kind === "plain"
+            ? "Nothing matched. Try Smart find — it can read a description."
+            : "No match. Try adding the city and state."),
+      );
+    }
+  }
+
   function patchField(i: number, p: Partial<FieldRow>) {
     setFields((prev) => prev.map((x, j) => (j === i ? { ...x, ...p } : x)));
   }
@@ -361,28 +378,31 @@ export default function FieldMap({
       <form
         onSubmit={async (e) => {
           e.preventDefault();
-          if (query.trim().length < 3) return;
-          setSearching(true);
-          const res = await fetch(`/api/geocode?q=${encodeURIComponent(query)}`);
-          const data = await res.json().catch(() => ({ results: [] }));
-          setResults(data.results ?? []);
-          setSearching(false);
-          if (!data.results?.length) setStatus("No places matched that search.");
+          await runSearch("plain");
         }}
-        className="mb-3 flex gap-2"
+        className="mb-3 flex flex-wrap gap-2"
       >
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search an address, park, or campus — e.g. Swope Park, Kansas City"
-          className="field"
+          placeholder="An address, park, or campus — or just 'the rec fields at KU'"
+          className="field min-w-52 flex-1"
         />
         <button
           type="submit"
-          disabled={searching}
+          disabled={!!searching}
           className="btn btn-ghost disabled:opacity-40"
         >
-          {searching ? "…" : "Find"}
+          {searching === "plain" ? "…" : "Find"}
+        </button>
+        <button
+          type="button"
+          onClick={() => runSearch("smart")}
+          disabled={!!searching}
+          title="Let Claude work out the real address, then geocode it"
+          className="btn btn-primary disabled:opacity-40"
+        >
+          {searching === "smart" ? "Thinking…" : "Smart find"}
         </button>
       </form>
 
@@ -400,6 +420,11 @@ export default function FieldMap({
                 className="w-full px-4 py-2.5 text-left text-sm hover:text-[var(--color-signal)]"
               >
                 {r.label}
+                {r.interpreted && (
+                  <span className="mono mt-1 block normal-case tracking-normal">
+                    read as “{r.interpreted}”{r.why ? ` — ${r.why}` : ""}
+                  </span>
+                )}
               </button>
             </li>
           ))}

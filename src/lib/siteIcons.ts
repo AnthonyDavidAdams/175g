@@ -106,3 +106,29 @@ export function iconSvg(kind: string, size = 16, color = "#08090b") {
       font-size="${(fontSize / size) * 24}" fill="${color}">${icon.mark}</text>
   </svg>`;
 }
+
+/**
+ * A map pin: a circular badge carrying the icon at a legible size, with the
+ * label captioned beneath it. Reads as an icon on the map rather than a text
+ * chip, and stays recognisable when the site map is printed in greyscale.
+ */
+export function mapPin(kind: string, label: string, active: boolean) {
+  const bg = active ? "#d4fe4f" : "#ffffff";
+  const ring = active ? "#08090b" : "#00000040";
+  const ink = "#08090b";
+  return `<div style="transform:translate(-50%,-100%);display:flex;flex-direction:column;
+    align-items:center;gap:2px;cursor:pointer;pointer-events:auto;">
+    <div style="display:flex;align-items:center;justify-content:center;
+      width:30px;height:30px;border-radius:50% 50% 50% 4px;
+      transform:rotate(-45deg);background:${bg};
+      border:2px solid ${ring};
+      box-shadow:0 2px 6px rgba(0,0,0,.45);">
+      <div style="transform:rotate(45deg);display:flex;">
+        ${iconSvg(kind, 16, ink)}
+      </div>
+    </div>
+    <div style="font:600 10px ui-monospace,monospace;color:#08090b;
+      background:${active ? "#d4fe4f" : "#ffffffdd"};padding:1px 5px;border-radius:3px;
+      white-space:nowrap;">${label}</div>
+  </div>`;
+}
