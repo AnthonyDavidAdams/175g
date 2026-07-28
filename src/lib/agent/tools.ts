@@ -59,6 +59,34 @@ export const TOOLS: Anthropic.Tool[] = [
         rosterDeadline: { type: "string" },
         refundPolicy: { type: "string" },
         description: { type: "string" },
+        venueLat: { type: "number" },
+        venueLng: { type: "number" },
+        directions: {
+          type: "string",
+          description:
+            "Getting-there notes. Include the venue coordinates as plain text — " +
+            "map links break and phones lose signal, but a printed lat/long can " +
+            "be typed into anything. Add the local knowledge a database can't " +
+            "know: which gate is unlocked, which lot floods, how long the walk " +
+            "from parking really is.",
+        },
+        paymentNote: { type: "string" },
+        paymentOptions: {
+          type: "array",
+          description:
+            "How teams pay. 175g processes no money — these are instructions for " +
+            "paying the TD directly. Methods: venmo, paypal, zelle, cashapp, " +
+            "invoice, check, transfer, other.",
+          items: {
+            type: "object",
+            properties: {
+              method: { type: "string" },
+              handle: { type: "string" },
+              note: { type: "string" },
+            },
+            required: ["method"],
+          },
+        },
       },
     },
   },
@@ -561,10 +589,17 @@ function updateTournament(input: Record<string, any>, ctx: Ctx) {
     "name", "startDate", "endDate", "venueName", "venueAddress", "city",
     "fieldCount", "surface", "division", "teamTarget", "sanctioned",
     "applyDeadline", "acceptanceDate", "paymentDeadline", "rosterDeadline",
-    "refundPolicy", "description",
+    "refundPolicy", "description", "directions", "paymentNote",
   ];
   for (const k of passthrough) if (input[k] !== undefined) patch[k] = input[k];
   if (input.bidFee !== undefined) patch.bidFee = Math.round(input.bidFee * 100);
+  if (input.venueLat !== undefined) patch.venueLat = String(input.venueLat);
+  if (input.venueLng !== undefined) patch.venueLng = String(input.venueLng);
+  if (input.paymentOptions !== undefined) {
+    patch.paymentOptions = input.paymentOptions?.length
+      ? JSON.stringify(input.paymentOptions)
+      : null;
+  }
 
   if (!Object.keys(patch).length) return "Nothing to update.";
 

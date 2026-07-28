@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { buildMetadata } from "@/lib/seo";
+import { methodLabel, parsePaymentOptions } from "@/lib/directions";
 import { formatDateRange, getTournament } from "@/lib/tournament";
 import ApplyForm from "./apply-form";
 
@@ -41,6 +42,10 @@ export default async function ApplyPage({ params }: Params) {
         slug={slug}
         bidFee={t.bidFee}
         applyDeadline={t.applyDeadline}
+        payments={parsePaymentOptions(t.paymentOptions).map((p) => ({
+          label: methodLabel(p.method),
+          handle: p.handle,
+        }))}
       />
 
       {t.refundPolicy && (

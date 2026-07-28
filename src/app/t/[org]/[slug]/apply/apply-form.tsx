@@ -7,11 +7,13 @@ export default function ApplyForm({
   slug,
   bidFee,
   applyDeadline,
+  payments = [],
 }: {
   org: string;
   slug: string;
   bidFee?: number | null;
   applyDeadline?: string | null;
+  payments?: { label: string; handle?: string | null }[];
 }) {
   const [state, setState] = useState<"idle" | "sending" | "done">("idle");
   const [error, setError] = useState<string | null>(null);
@@ -56,6 +58,26 @@ export default function ApplyForm({
           You&apos;ll hear back about your bid by the acceptance date. Watch for an
           email — payment and roster deadlines will be in it.
         </p>
+        {payments.length > 0 && (
+          <>
+            <p className="mono mt-6">When you&apos;re accepted, pay by</p>
+            <ul className="mt-2 space-y-1 text-sm">
+              {payments.map((p, i) => (
+                <li key={i}>
+                  <span className="font-medium">{p.label}</span>
+                  {p.handle && (
+                    <span className="tabular ml-2 text-[var(--color-dim)]">
+                      {p.handle}
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
+            <p className="mono mt-3 normal-case tracking-normal">
+              Don&apos;t pay until your bid is confirmed.
+            </p>
+          </>
+        )}
       </div>
     );
   }

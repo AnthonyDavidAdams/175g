@@ -168,6 +168,19 @@ export const TournamentDoc = z.object({
     description: z.string().nullish(),
     published: z.boolean().nullish(),
     telegramInviteUrl: z.string().nullish(),
+    venueLat: z.number().nullish(),
+    venueLng: z.number().nullish(),
+    directions: z.string().nullish(),
+    paymentNote: z.string().nullish(),
+    paymentOptions: z
+      .array(
+        z.object({
+          method: z.string(),
+          handle: z.string().nullish(),
+          note: z.string().nullish(),
+        }),
+      )
+      .nullish(),
   }),
   sites: z.array(Site).default([]),
   fields: z.array(Field).default([]),
@@ -280,6 +293,13 @@ export function toDoc(
       description: t.description,
       published: t.published,
       telegramInviteUrl: t.telegramInviteUrl,
+      venueLat: t.venueLat != null ? Number(t.venueLat) : null,
+      venueLng: t.venueLng != null ? Number(t.venueLng) : null,
+      directions: t.directions,
+      paymentNote: t.paymentNote,
+      // Photos are files, not document data, so they are managed separately
+      // and survive an apply untouched.
+      paymentOptions: t.paymentOptions ? JSON.parse(t.paymentOptions) : null,
     },
     sites: sites.map((s) => ({
       key: s.name,
@@ -548,6 +568,13 @@ export function applyDoc(
       description: t.description ?? null,
       published: t.published ?? false,
       telegramInviteUrl: t.telegramInviteUrl ?? null,
+      venueLat: t.venueLat != null ? String(t.venueLat) : null,
+      venueLng: t.venueLng != null ? String(t.venueLng) : null,
+      directions: t.directions ?? null,
+      paymentNote: t.paymentNote ?? null,
+      paymentOptions: t.paymentOptions?.length
+        ? JSON.stringify(t.paymentOptions)
+        : null,
     })
     .where(eq(schema.tournaments.id, tournamentId))
     .run();

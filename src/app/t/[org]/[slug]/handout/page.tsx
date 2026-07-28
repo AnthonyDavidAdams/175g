@@ -2,6 +2,12 @@ import { asc, eq } from "drizzle-orm";
 import { notFound } from "next/navigation";
 import QRCode from "qrcode";
 import { db, schema } from "@/lib/db";
+import {
+  PAYMENT_DISCLAIMER,
+  formatCoords,
+  methodLabel,
+  parsePaymentOptions,
+} from "@/lib/directions";
 import { SITE_URL, buildMetadata } from "@/lib/seo";
 import { backdropTiles, layoutBounds, siteMapSvg } from "@/lib/siteMapSvg";
 import {
@@ -47,6 +53,12 @@ export default async function HandoutPage({ params }: Params) {
     .from(schema.sitePoints)
     .where(eq(schema.sitePoints.tournamentId, t.id))
     .all();
+
+  const payments = parsePaymentOptions(t.paymentOptions);
+  const coords = formatCoords(
+    t.venueLat ? Number(t.venueLat) : null,
+    t.venueLng ? Number(t.venueLng) : null,
+  );
 
   const publicUrl = new URL(`/t/${org}/${slug}`, SITE_URL).toString();
   const scheduleUrl = new URL(`/t/${org}/${slug}/schedule`, SITE_URL).toString();
@@ -274,6 +286,36 @@ export default async function HandoutPage({ params }: Params) {
               </ul>
             </section>
           </div>
+
+          {(t.directions || coords) && (
+            <section className="block">
+              <h2>Getting there</h2>
+              {coords && (
+                <p className="tiny">
+                  <strong>Coordinates:</strong> {coords} — type these into any map
+                  app if the address takes you to the wrong gate.
+                </p>
+              )}
+              {t.directions && <p className="tiny pre">{t.directions}</p>}
+            </section>
+          )}
+
+          {payments.length > 0 && (
+            <section className="block">
+              <h2>Paying your bid</h2>
+              <ul>
+                {payments.map((p, i) => (
+                  <li key={i}>
+                    <strong>{methodLabel(p.method)}</strong>
+                    {p.handle ? ` — ${p.handle}` : ""}
+                    {p.note ? ` (${p.note})` : ""}
+                  </li>
+                ))}
+              </ul>
+              {t.paymentNote && <p className="tiny">{t.paymentNote}</p>}
+              <p className="tiny">{PAYMENT_DISCLAIMER}</p>
+            </section>
+          )}
 
           {t.refundPolicy && (
             <section className="block">

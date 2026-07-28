@@ -60,6 +60,24 @@ export const tournaments = sqliteTable(
     refundPolicy: text("refund_policy"),
     description: text("description"),
 
+    /** Precise venue coordinates — what people actually navigate to. */
+    venueLat: text("venue_lat"),
+    venueLng: text("venue_lng"),
+    /**
+     * Getting-there notes. Auto-generated from the venue and the site map, then
+     * freely editable — the local knowledge that saves twenty phone calls.
+     */
+    directions: text("directions"),
+
+    /**
+     * How teams pay, as JSON:
+     *   [{ "method": "venmo", "handle": "@kc-ultimate", "note": "..." }]
+     * No money moves through 175g. These are instructions, so a TD can take
+     * payment however they already do.
+     */
+    paymentOptions: text("payment_options"),
+    paymentNote: text("payment_note"),
+
     // Public site
     published: integer("published", { mode: "boolean" }).default(false),
     scheduleLocked: integer("schedule_locked", { mode: "boolean" }).default(false),
@@ -556,4 +574,24 @@ export const agentMessages = sqliteTable(
     createdAt: integer("created_at").notNull().default(now),
   },
   (t) => [index("agent_tournament_idx").on(t.tournamentId)],
+);
+
+/** Photos for the public page. Stored on the volume, served through the app. */
+export const media = sqliteTable(
+  "media",
+  {
+    id: text("id").primaryKey(),
+    tournamentId: text("tournament_id").notNull().references(() => tournaments.id),
+    kind: text("kind").notNull().default("gallery"), // hero | gallery
+    filename: text("filename").notNull(),
+    mimeType: text("mime_type").notNull(),
+    bytes: integer("bytes").notNull(),
+    width: integer("width"),
+    height: integer("height"),
+    caption: text("caption"),
+    credit: text("credit"),
+    sortOrder: integer("sort_order").default(0),
+    createdAt: integer("created_at").notNull().default(now),
+  },
+  (t) => [index("media_tournament_idx").on(t.tournamentId)],
 );
