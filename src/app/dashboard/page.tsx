@@ -40,17 +40,30 @@ export default async function Dashboard() {
 
   return (
     <main className="mx-auto max-w-3xl px-6 py-14">
-      <span className="mono">{session.email}</span>
-      <h1 className="display mt-3 text-4xl">Your tournaments</h1>
+      <div className="flex flex-wrap items-baseline justify-between gap-3">
+        <div>
+          <span className="mono">{session.email}</span>
+          <h1 className="display mt-3 text-4xl">Your tournaments</h1>
+        </div>
+        <Link href="/new" className="btn btn-primary">
+          Start a tournament
+        </Link>
+      </div>
 
       {tournaments.length === 0 ? (
         <div className="panel mt-10 p-6">
           <p className="mono">Nothing yet</p>
           <p className="mt-3 leading-relaxed text-[var(--color-dim)]">
-            You aren&apos;t on a tournament yet. If someone invited you, ask them to
-            add this email. Otherwise, get in touch and we&apos;ll set your program
-            up — 175g is free for college teams.
+            Start one and the agent will walk you through it — you only need a name
+            to begin. Free for college and community tournaments.
           </p>
+          <p className="mt-4 text-sm text-[var(--color-dim)]">
+            If a teammate already set one up, ask them to add{" "}
+            <span className="tabular">{session.email}</span> under Access.
+          </p>
+          <Link href="/new" className="btn btn-primary mt-5">
+            Start a tournament
+          </Link>
         </div>
       ) : (
         <ul className="mt-10 space-y-3">

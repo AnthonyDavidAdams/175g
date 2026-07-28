@@ -16,5 +16,7 @@ export async function GET(req: Request) {
 
   const next =
     url.searchParams.get("next") ?? result.redirectTo ?? "/dashboard";
+  // /new is protected, so a signed-out "Start a tournament" click lands here
+  // and continues straight through rather than dead-ending on the dashboard.
   return NextResponse.redirect(new URL(next, SITE_URL));
 }

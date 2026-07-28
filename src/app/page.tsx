@@ -78,7 +78,7 @@ export default function Home() {
             field email to the archive you hand the next TD.
           </p>
           <div className="mt-10 flex flex-wrap items-center gap-4">
-            <Link href="/login" className="btn btn-primary">
+            <Link href="/new" className="btn btn-primary">
               Start a tournament
             </Link>
             <span className="mono">Free for college &amp; community tournaments</span>
@@ -239,7 +239,7 @@ export default function Home() {
 
         <footer className="flex flex-wrap items-center justify-between gap-4 py-10">
           <span className="mono">175g — the weight of a regulation disc</span>
-          <Link href="/login" className="mono hover:text-[var(--color-signal)]">
+          <Link href="/new" className="mono hover:text-[var(--color-signal)]">
             Start →
           </Link>
         </footer>
