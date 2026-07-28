@@ -100,6 +100,13 @@ export const TOOLS: Anthropic.Tool[] = [
       type: "object",
       properties: {
         eventDate: { type: "string", description: "YYYY-MM-DD" },
+        sanctioned: {
+          type: "boolean",
+          description:
+            "Whether the event is being sanctioned. When false, federation " +
+            "paperwork is left out of the countdown entirely. Defaults to the " +
+            "tournament's current setting — ask if it hasn't been decided.",
+        },
       },
       required: ["eventDate"],
     },
@@ -475,6 +482,44 @@ export const TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "manage_tasks",
+    description:
+      "Read and change the plan: list tasks, add work, reassign, mark done, set " +
+      "dates, delete. The TD sees the same list on the Plan page, with a timeline " +
+      "view.\n\n" +
+      "Use this when the TD asks who is doing what, wants work handed to someone, " +
+      "or tells you something is finished. A task with a start date draws as a bar " +
+      "on the timeline; without one it is a milestone on its due date — only set a " +
+      "start date when the work genuinely spans days.",
+    input_schema: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          description: "list | add | update | complete | assign | delete",
+        },
+        filter: {
+          type: "string",
+          description:
+            "list: all | open | late | week | unassigned | done. Default open.",
+        },
+        assignee: { type: "string" },
+        taskId: { type: "string" },
+        taskText: {
+          type: "string",
+          description: "add: the task. update/complete/delete: matches on text if no taskId.",
+        },
+        phase: { type: "string" },
+        owner: { type: "string", description: "The role responsible, e.g. Medical." },
+        startDate: { type: "string", description: "YYYY-MM-DD" },
+        dueDate: { type: "string", description: "YYYY-MM-DD" },
+        hardDeadline: { type: "boolean" },
+        notes: { type: "string" },
+      },
+      required: ["action"],
+    },
+  },
+  {
     name: "get_tournament_doc",
     description:
       "Export the entire tournament as one JSON document — venue, sites, fields " +
@@ -572,6 +617,8 @@ export async function runTool(
       return manageWaiver(input, ctx);
     case "post_announcement":
       return postAnnouncement(input, ctx);
+    case "manage_tasks":
+      return manageTasks(input, ctx);
     case "get_tournament_doc":
       return getTournamentDoc(input, ctx);
     case "apply_tournament_doc":
@@ -612,7 +659,21 @@ function updateTournament(input: Record<string, any>, ctx: Ctx) {
 }
 
 function generateTimeline(input: Record<string, any>, ctx: Ctx) {
-  const rows = buildTimeline(input.eventDate, new Date());
+  const t = db
+    .select()
+    .from(schema.tournaments)
+    .where(eq(schema.tournaments.id, ctx.tournamentId))
+    .get();
+  const sanctioned = input.sanctioned ?? !!t?.sanctioned;
+
+  if (input.sanctioned !== undefined && input.sanctioned !== !!t?.sanctioned) {
+    db.update(schema.tournaments)
+      .set({ sanctioned: input.sanctioned })
+      .where(eq(schema.tournaments.id, ctx.tournamentId))
+      .run();
+  }
+
+  const rows = buildTimeline(input.eventDate, new Date(), { sanctioned });
 
   db.delete(schema.tasks)
     .where(eq(schema.tasks.tournamentId, ctx.tournamentId))
@@ -637,7 +698,8 @@ function generateTimeline(input: Record<string, any>, ctx: Ctx) {
   const soon = rows.filter((r) => r.status === "THIS WEEK");
 
   const lines = [
-    `Generated ${rows.length} deadlines from event date ${input.eventDate}.`,
+    `Generated ${rows.length} deadlines from event date ${input.eventDate}` +
+      `${sanctioned ? "" : " (unsanctioned — no federation paperwork included)"}.`,
     `${late.length} already late, ${soon.length} due this week.`,
   ];
   if (lateHard.length) {
@@ -1914,6 +1976,138 @@ function postAnnouncement(input: Record<string, any>, ctx: Ctx) {
 }
 
 
+
+function manageTasks(input: Record<string, any>, ctx: Ctx) {
+  const all = db
+    .select()
+    .from(schema.tasks)
+    .where(eq(schema.tasks.tournamentId, ctx.tournamentId))
+    .all();
+  const today = new Date().toISOString().slice(0, 10);
+  const weekOut = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+
+  const findTask = () => {
+    if (input.taskId) return all.find((t) => t.id === input.taskId);
+    if (input.taskText) {
+      const needle = String(input.taskText).toLowerCase();
+      return (
+        all.find((t) => t.task.toLowerCase() === needle) ??
+        all.find((t) => t.task.toLowerCase().includes(needle))
+      );
+    }
+    return undefined;
+  };
+
+  if (input.action === "list") {
+    const filter = input.filter ?? "open";
+    let rows = all;
+    if (filter === "open") rows = all.filter((t) => !t.done);
+    if (filter === "done") rows = all.filter((t) => t.done);
+    if (filter === "late") {
+      rows = all.filter((t) => !t.done && t.dueDate && t.dueDate < today);
+    }
+    if (filter === "week") {
+      rows = all.filter(
+        (t) => !t.done && t.dueDate && t.dueDate >= today && t.dueDate <= weekOut,
+      );
+    }
+    if (filter === "unassigned") {
+      rows = all.filter((t) => !t.done && !t.assignee);
+    }
+    if (input.assignee) {
+      rows = rows.filter(
+        (t) => (t.assignee ?? "").toLowerCase() === String(input.assignee).toLowerCase(),
+      );
+    }
+    if (!rows.length) return `No tasks match "${filter}".`;
+
+    return [
+      `${rows.length} task(s), filter "${filter}":`,
+      ...rows
+        .sort((a, b) => (a.dueDate ?? "9999").localeCompare(b.dueDate ?? "9999"))
+        .map(
+          (t) =>
+            `  ${t.done ? "[x]" : "[ ]"} ${t.dueDate ?? "no date"}  ${t.task}` +
+            `${t.assignee ? ` — ${t.assignee}` : " — UNASSIGNED"}` +
+            `${t.hardDeadline ? " (hard)" : ""}  [id ${t.id}]`,
+        ),
+    ].join("\n");
+  }
+
+  if (input.action === "add") {
+    if (!input.taskText) return "Give taskText for the task to add.";
+    const id = nanoid();
+    db.insert(schema.tasks)
+      .values({
+        id,
+        tournamentId: ctx.tournamentId,
+        phase: input.phase ?? null,
+        task: input.taskText,
+        owner: input.owner ?? null,
+        assignee: input.assignee ?? null,
+        startDate: input.startDate ?? null,
+        dueDate: input.dueDate ?? null,
+        hardDeadline: !!input.hardDeadline,
+        notes: input.notes ?? null,
+      })
+      .run();
+    return (
+      `Added "${input.taskText}"` +
+      `${input.dueDate ? `, due ${input.dueDate}` : " with no date"}` +
+      `${input.assignee ? `, assigned to ${input.assignee}` : ", unassigned"}.`
+    );
+  }
+
+  const task = findTask();
+  if (!task) {
+    return `No task matched. Call with action "list" to see them and their ids.`;
+  }
+
+  if (input.action === "delete") {
+    db.delete(schema.tasks).where(eq(schema.tasks.id, task.id)).run();
+    return `Deleted "${task.task}".`;
+  }
+
+  if (input.action === "complete") {
+    db.update(schema.tasks)
+      .set({ done: true, doneAt: Math.floor(Date.now() / 1000) })
+      .where(eq(schema.tasks.id, task.id))
+      .run();
+    const remaining = all.filter((t) => !t.done && t.id !== task.id);
+    const late = remaining.filter((t) => t.dueDate && t.dueDate < today);
+    return (
+      `Marked "${task.task}" done. ${remaining.length} open` +
+      `${late.length ? `, ${late.length} late` : ""}.`
+    );
+  }
+
+  if (input.action === "assign") {
+    if (!input.assignee) return "Give an assignee.";
+    db.update(schema.tasks)
+      .set({ assignee: input.assignee })
+      .where(eq(schema.tasks.id, task.id))
+      .run();
+    return `Assigned "${task.task}" to ${input.assignee}.`;
+  }
+
+  if (input.action === "update") {
+    const patch: Record<string, unknown> = {};
+    if (input.taskText && input.taskId) patch.task = input.taskText;
+    for (const k of ["phase", "owner", "assignee", "startDate", "dueDate", "notes"]) {
+      if (input[k] !== undefined) patch[k] = input[k];
+    }
+    if (input.hardDeadline !== undefined) patch.hardDeadline = input.hardDeadline;
+    if (!Object.keys(patch).length) return "Nothing to change.";
+    db.update(schema.tasks)
+      .set(patch)
+      .where(eq(schema.tasks.id, task.id))
+      .run();
+    return `Updated "${task.task}": ${Object.keys(patch).join(", ")}.`;
+  }
+
+  return 'Unknown action. Use list, add, update, complete, assign, or delete.';
+}
+
 function getTournamentDoc(input: Record<string, any>, ctx: Ctx) {
   const doc = toDoc(ctx.tournamentId, {
     includeContacts: !!input.includeContacts,
@@ -2017,7 +2211,7 @@ function getStatus(ctx: Ctx) {
     ["Division", t.division ?? "NOT SET"],
     ["Team target", t.teamTarget ?? "NOT SET"],
     ["Bid fee", t.bidFee ? `$${(t.bidFee / 100).toFixed(0)}` : "NOT SET"],
-    ["Sanctioned", t.sanctioned ? "yes" : "no"],
+    ["Sanctioned", t.sanctioned ? "yes" : "no (a valid choice)"],
     ["Refund policy", t.refundPolicy ? "written" : "NOT WRITTEN"],
     ["Published", t.published ? "yes" : "no"],
   ]

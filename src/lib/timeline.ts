@@ -45,6 +45,7 @@ const PLAN: PlanRow[] = [
   [6, "Sponsors", "Sponsor logo cutoff for anything printed", "Sponsorship", true],
   [5, "Swag", "Order shirts (2–3 week lead time)", "Media", false],
   [5, "Compliance", "Write the Event Medical Plan and Inclement Weather Plan", "Medical", false],
+  [5, "Compliance", "Publish the participant waiver and start collecting signatures — someone can get hurt at any event, sanctioned or not", "Registration", true],
   [4, "Staff", "Recruit volunteers — 25% more than the shift grid needs", "Volunteers", false],
   [4, "Ops", "Confirm food, water source, and ice orders", "Food/Water", false],
   [3, "Swag", "Order stickers and field banners", "Media", false],
@@ -78,13 +79,45 @@ export type TimelineRow = {
   status: "LATE" | "THIS WEEK" | "soon" | "upcoming" | "done/passed";
 };
 
-export function buildTimeline(eventDate: string, today: Date): TimelineRow[] {
+/** Tasks that only exist because an event is sanctioned. */
+const SANCTIONING_ONLY = new Set([
+  "Start TD certification and SafeSport training",
+  "Submit sanctioning application (6+ weeks out is the cheaper fee tier)",
+  "Request certificate of insurance with the facility's exact legal entity name and limits",
+  "Deliver the COI to the facility (many require 30+ days)",
+  "Roster deadline — 5:00pm Wednesday before, for sanctioned college events",
+]);
+
+export function buildTimeline(
+  eventDate: string,
+  today: Date,
+  opts: { sanctioned?: boolean } = { sanctioned: true },
+): TimelineRow[] {
   const event = new Date(`${eventDate}T00:00:00Z`);
   const todayUtc = new Date(
     Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()),
   );
 
-  const rows = PLAN.map(([weeks, phase, task, owner, hard]) => {
+  // An unsanctioned event still needs insurance if the venue asks for it, but
+  // it does not need federation paperwork — generating those tasks anyway makes
+  // the countdown wrong and trains people to ignore it.
+  const plan =
+    opts.sanctioned === false
+      ? PLAN.filter(([, , task]) => !SANCTIONING_ONLY.has(task)).map((row) =>
+          row[2] ===
+          "Negotiate field agreement: price, setup time, lining, cancellation, insurance requirements"
+            ? ([
+                row[0],
+                row[1],
+                "Negotiate field agreement, and ask what proof of insurance they require",
+                row[3],
+                row[4],
+              ] as PlanRow)
+            : row,
+        )
+      : PLAN;
+
+  const rows = plan.map(([weeks, phase, task, owner, hard]) => {
     const due = new Date(event.getTime() - weeks * 7 * 86400000);
     const daysOut = Math.round((due.getTime() - todayUtc.getTime()) / 86400000);
     let status: TimelineRow["status"];

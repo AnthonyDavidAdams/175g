@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Markdown from "@/components/markdown";
 
 type ToolCall = { name: string; input: unknown; result: string };
 type Msg = {
@@ -98,7 +99,7 @@ export default function Console({
                   <p className="mono live">Thinking</p>
                 ) : (
                   <>
-                    <p className="leading-relaxed whitespace-pre-wrap">{m.content}</p>
+                    <Markdown>{m.content}</Markdown>
                     {m.toolCalls && m.toolCalls.length > 0 && (
                       <div className="mt-4 space-y-1.5">
                         {m.toolCalls.map((tc, j) => (

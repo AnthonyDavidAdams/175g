@@ -82,6 +82,12 @@ export default async function TdPage({ params }: Params) {
             Public page
           </Link>
           <Link
+            href={`/td/${org}/${slug}/plan`}
+            className="mono hover:text-[var(--color-signal)]"
+          >
+            Plan
+          </Link>
+          <Link
             href={`/td/${org}/${slug}/scores`}
             className="mono hover:text-[var(--color-signal)]"
           >
@@ -162,7 +168,9 @@ export default async function TdPage({ params }: Params) {
           )}
 
           <div className="panel p-4">
-            <p className="mono">Next up</p>
+            <Link href={`/td/${org}/${slug}/plan`} className="mono hover:text-[var(--color-signal)]">
+              Next up →
+            </Link>
             {next.length === 0 ? (
               <p className="mt-3 text-sm text-[var(--color-dim)]">
                 No timeline yet. Ask the agent to generate one.

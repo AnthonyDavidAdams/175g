@@ -24,7 +24,8 @@ const Body = z
   startDate: z.string().nullish(),
   endDate: z.string().nullish(),
   division: z.string().nullish(),
-  teamTarget: z.number().nullish(),
+    teamTarget: z.number().nullish(),
+    sanctioned: z.boolean().nullish(),
     /** Join an org the user is already a member of, instead of making one. */
     orgSlug: z.string().nullish(),
   })
@@ -150,6 +151,7 @@ export async function POST(req: Request) {
       city: input.city ?? null,
       division: input.division ?? null,
       teamTarget: input.teamTarget ?? null,
+      sanctioned: input.sanctioned ?? false,
       // Unpublished until the TD chooses. Nothing is public by accident, and a
       // half-built page shouldn't be findable.
       published: false,

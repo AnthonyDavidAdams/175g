@@ -120,11 +120,14 @@ const Waiver = z.object({
 
 const Task = z.object({
   due: z.string().nullish(),
+  start: z.string().nullish(),
   phase: z.string().nullish(),
   task: z.string().min(1),
   owner: z.string().nullish(),
+  assignee: z.string().nullish(),
   hard: z.boolean().default(false),
   done: z.boolean().default(false),
+  notes: z.string().nullish(),
 });
 
 const Sponsor = z.object({
@@ -373,11 +376,14 @@ export function toDoc(
     })),
     tasks: tasks.map((x) => ({
       due: x.dueDate,
+      start: x.startDate,
       phase: x.phase,
       task: x.task,
       owner: x.owner,
+      assignee: x.assignee,
       hard: !!x.hardDeadline,
       done: !!x.done,
+      notes: x.notes,
     })),
     sponsors: sponsors.map((s) => ({
       org: s.org,
@@ -773,9 +779,12 @@ export function applyDoc(
         phase: x.phase ?? null,
         task: x.task,
         owner: x.owner ?? null,
+        assignee: x.assignee ?? null,
+        startDate: x.start ?? null,
         dueDate: x.due ?? null,
         hardDeadline: x.hard,
         done: x.done,
+        notes: x.notes ?? null,
       })
       .run();
   }

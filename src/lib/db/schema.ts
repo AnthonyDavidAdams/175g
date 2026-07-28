@@ -266,7 +266,13 @@ export const tasks = sqliteTable(
     phase: text("phase"),
     task: text("task").notNull(),
     owner: text("owner"),
+    /** Who is actually doing it — a name, not a role. */
+    assignee: text("assignee"),
+    /** Optional. With one, a task is a bar on the plan; without, a milestone. */
+    startDate: text("start_date"),
     dueDate: text("due_date"),
+    notes: text("notes"),
+    sortOrder: integer("sort_order").default(0),
     hardDeadline: integer("hard_deadline", { mode: "boolean" }).default(false),
     done: integer("done", { mode: "boolean" }).default(false),
     doneAt: integer("done_at"),

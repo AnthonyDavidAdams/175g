@@ -29,6 +29,12 @@ export default function NewTournamentForm({
         startDate: String(fd.get("startDate") ?? "") || null,
         endDate: String(fd.get("endDate") ?? "") || null,
         division: String(fd.get("division") ?? "") || null,
+        sanctioned:
+          fd.get("sanctioned") === "yes"
+            ? true
+            : fd.get("sanctioned") === "no"
+              ? false
+              : null,
         teamTarget: Number(fd.get("teamTarget")) || null,
       }),
     });
@@ -138,6 +144,14 @@ export default function NewTournamentForm({
             </select>
           </label>
           <label className="block">
+            <span className="mono">Sanctioning</span>
+            <select name="sanctioned" className="field mt-2" defaultValue="">
+              <option value="">Not decided</option>
+              <option value="yes">Sanctioned</option>
+              <option value="no">Unsanctioned</option>
+            </select>
+          </label>
+          <label className="block">
             <span className="mono">Teams you want</span>
             <input
               name="teamTarget"
@@ -150,6 +164,10 @@ export default function NewTournamentForm({
           </label>
         </div>
         <p className="mono mt-3 normal-case tracking-normal">
+          Sanctioning is optional — plenty of excellent tournaments run without it.
+          The agent will talk you through the trade if you leave it undecided.
+        </p>
+        <p className="mono mt-2 normal-case tracking-normal">
           Everything except the two names can wait — leave them blank and the agent
           will work through them with you.
         </p>
