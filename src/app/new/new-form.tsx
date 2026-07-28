@@ -22,9 +22,7 @@ export default function NewTournamentForm({
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         orgSlug: useExisting ? String(fd.get("orgSlug") || "") || null : null,
-        orgName: useExisting
-          ? orgs.find((o) => o.slug === fd.get("orgSlug"))?.name || "Program"
-          : String(fd.get("orgName") ?? ""),
+        orgName: useExisting ? null : String(fd.get("orgName") ?? ""),
         tournamentName: String(fd.get("tournamentName") ?? ""),
         school: String(fd.get("school") ?? "") || null,
         city: String(fd.get("city") ?? "") || null,

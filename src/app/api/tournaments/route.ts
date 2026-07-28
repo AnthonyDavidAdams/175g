@@ -14,18 +14,24 @@ import { db, schema } from "@/lib/db";
  * and explain the difference afterwards.
  */
 
-const Body = z.object({
-  orgName: z.string().min(2, "Give your program a name."),
-  tournamentName: z.string().min(2, "Give the tournament a name."),
+const Body = z
+  .object({
+    /** Required only when creating a new program; ignored when orgSlug is given. */
+    orgName: z.string().nullish(),
+    tournamentName: z.string().min(2, "Give the tournament a name."),
   school: z.string().nullish(),
   city: z.string().nullish(),
   startDate: z.string().nullish(),
   endDate: z.string().nullish(),
   division: z.string().nullish(),
   teamTarget: z.number().nullish(),
-  /** Join an org the user is already a member of, instead of making one. */
-  orgSlug: z.string().nullish(),
-});
+    /** Join an org the user is already a member of, instead of making one. */
+    orgSlug: z.string().nullish(),
+  })
+  .refine((v) => !!v.orgSlug || (v.orgName ?? "").trim().length >= 2, {
+    message: "Give your program a name.",
+    path: ["orgName"],
+  });
 
 function slugify(s: string) {
   return s
@@ -96,8 +102,10 @@ export async function POST(req: Request) {
     orgId = org.id;
     orgSlug = org.slug;
   } else {
+    // The refine above guarantees this is present when orgSlug is absent.
+    const orgName = (input.orgName ?? "").trim();
     orgSlug = uniqueSlug(
-      slugify(input.orgName),
+      slugify(orgName),
       (s) => !!db.select().from(schema.orgs).where(eq(schema.orgs.slug, s)).get(),
     );
     orgId = nanoid();
@@ -105,7 +113,7 @@ export async function POST(req: Request) {
       .values({
         id: orgId,
         slug: orgSlug,
-        name: input.orgName,
+        name: orgName,
         school: input.school ?? null,
         city: input.city ?? null,
       })
