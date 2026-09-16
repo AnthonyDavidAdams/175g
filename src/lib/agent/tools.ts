@@ -2310,6 +2310,14 @@ function getStatus(ctx: Ctx) {
     ["Sanctioned", t.sanctioned ? "yes" : "no (a valid choice)"],
     ["Refund policy", t.refundPolicy ? "written" : "NOT WRITTEN"],
     ["Published", t.published ? "yes" : "no"],
+    [
+      "Telegram",
+      t.telegramChatId
+        ? "group linked"
+        : t.telegramLinkCode
+          ? `not linked — captains add @TD175Bot to a group and type /link ${t.telegramLinkCode} (the code is in the console; do not put it in public announcements)`
+          : "not linked — the TD console shows the /link code",
+    ],
   ]
     .map(([k, v]) => `  ${k}: ${v}`)
     .join("\n");

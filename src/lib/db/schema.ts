@@ -85,6 +85,12 @@ export const tournaments = sqliteTable(
 
     telegramChatId: text("telegram_chat_id"),
     telegramInviteUrl: text("telegram_invite_url"),
+    /**
+     * What a captain types after /link in the group. A secret, not the slug:
+     * slugs are public, and anyone who could guess one could bind their own
+     * group to someone else's tournament and post scores into it.
+     */
+    telegramLinkCode: text("telegram_link_code"),
 
     /**
      * How divisions share the fields when an event runs more than one:

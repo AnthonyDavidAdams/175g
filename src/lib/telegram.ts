@@ -35,6 +35,27 @@ export async function sendTelegram(chatId: string, text: string) {
   });
 }
 
+/**
+ * The code a TD reads out of the console and a captain types after /link.
+ * Generated lazily, once per tournament. Unambiguous alphabet: no 0/O, 1/I/L.
+ */
+export function ensureLinkCode(tournamentId: string): string {
+  const t = db
+    .select({ code: schema.tournaments.telegramLinkCode })
+    .from(schema.tournaments)
+    .where(eq(schema.tournaments.id, tournamentId))
+    .get();
+  if (t?.code) return t.code;
+  const alphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+  let code = "";
+  for (let i = 0; i < 6; i++) code += alphabet[Math.floor(Math.random() * alphabet.length)];
+  db.update(schema.tournaments)
+    .set({ telegramLinkCode: code })
+    .where(eq(schema.tournaments.id, tournamentId))
+    .run();
+  return code;
+}
+
 function tournamentForChat(chatId: string) {
   return db
     .select()
@@ -88,7 +109,7 @@ export async function handleUpdate(update: any) {
       [
         "<b>175g tournament bot</b>",
         "",
-        "/link &lt;slug&gt; — bind this group to a tournament",
+        "/link &lt;code&gt; — bind this group to a tournament (code is in the TD console)",
         "/score Pitt 15 - 12 CMU — report a final score",
         "/next Pitt — that team's next game",
         "/schedule — the current round",
@@ -98,14 +119,24 @@ export async function handleUpdate(update: any) {
   }
 
   if (/^\/link/i.test(text)) {
-    const slug = text.replace(/^\/link(@\S+)?\s*/i, "").trim();
-    if (!slug) return sendTelegram(chatId, "Usage: /link <tournament-slug>");
+    const code = text.replace(/^\/link(@\S+)?\s*/i, "").trim().toUpperCase();
+    if (!code) {
+      return sendTelegram(
+        chatId,
+        "Usage: /link <code> — the TD finds the code in the console, under Telegram.",
+      );
+    }
     const t = db
       .select()
       .from(schema.tournaments)
-      .where(eq(schema.tournaments.slug, slug))
+      .where(eq(schema.tournaments.telegramLinkCode, code))
       .get();
-    if (!t) return sendTelegram(chatId, `No tournament with slug "${slug}".`);
+    if (!t) {
+      return sendTelegram(
+        chatId,
+        "That code doesn't match a tournament. It's six characters, from the TD console — not the tournament's name or URL.",
+      );
+    }
     db.update(schema.tournaments)
       .set({ telegramChatId: chatId })
       .where(eq(schema.tournaments.id, t.id))

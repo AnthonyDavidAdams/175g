@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { ROLE_BLURB, ROLE_LABEL, can, getAccess } from "@/lib/access";
 import { threadFor } from "@/lib/agent/runner";
+import { ensureLinkCode } from "@/lib/telegram";
 import { db, schema } from "@/lib/db";
 import { buildMetadata } from "@/lib/seo";
 import { getTeams, getTournament } from "@/lib/tournament";
@@ -141,6 +142,8 @@ export default async function TdPage({ params }: Params) {
   const late = open.filter((x) => x.dueDate && x.dueDate < today);
   const next = open.filter((x) => x.dueDate && x.dueDate >= today).slice(0, 6);
   const openNotes = notes.filter((n) => !n.resolvedAt).length;
+  const telegramReady = !!process.env.TELEGRAM_BOT_TOKEN;
+  const linkCode = telegramReady && can(role, "announce") ? ensureLinkCode(t.id) : null;
 
   const nav: { href: string; label: string; show: boolean }[] = [
     { href: `/dashboard?all=1`, label: "All tournaments", show: true },
@@ -228,6 +231,32 @@ export default async function TdPage({ params }: Params) {
               <Row k="Published" v={t.published ? "yes" : "no"} />
             </dl>
           </div>
+
+          {linkCode && (
+            <div className="panel p-4">
+              <p className="mono">Telegram · {t.telegramChatId ? "linked" : "not linked"}</p>
+              {t.telegramChatId ? (
+                <p className="mt-2 text-sm text-[var(--color-dim)]">
+                  Captains report with /score, /next, /schedule, /standings. Announcements
+                  can broadcast there.
+                </p>
+              ) : (
+                <>
+                  <p className="mt-2 text-sm text-[var(--color-dim)]">
+                    Make a group for captains, add{" "}
+                    <a href="https://t.me/TD175Bot" className="underline hover:text-[var(--color-signal)]">
+                      @TD175Bot
+                    </a>
+                    , and type
+                  </p>
+                  <p className="tabular mt-2 text-lg text-[var(--color-signal)]">/link {linkCode}</p>
+                  <p className="mono mt-2 normal-case tracking-normal">
+                    The code is a secret. Don&apos;t post it publicly.
+                  </p>
+                </>
+              )}
+            </div>
+          )}
 
           {late.length > 0 && (
             <div className="panel border-[var(--color-alert)]/40 p-4">
