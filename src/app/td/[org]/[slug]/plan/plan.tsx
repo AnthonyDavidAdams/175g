@@ -27,12 +27,15 @@ export default function Plan({
   eventDate,
   people,
   tasks: initial,
+  readOnly = false,
 }: {
   org: string;
   slug: string;
   eventDate: string | null;
   people: string[];
   tasks: Task[];
+  /** Advisors see the plan exactly as the TD does, minus every control. */
+  readOnly?: boolean;
 }) {
   const [tasks, setTasks] = useState(initial);
   const [view, setView] = useState<"list" | "chart">("list");
@@ -164,28 +167,31 @@ export default function Plan({
           />
           Show done
         </label>
-        <button
-          onClick={() =>
-            setEditing({
-              id: "",
-              phase: "",
-              task: "",
-              owner: "",
-              assignee: "",
-              startDate: "",
-              dueDate: "",
-              hardDeadline: false,
-              done: false,
-              notes: "",
-            })
-          }
-          className="btn btn-ghost !py-1.5 !text-xs"
-        >
-          Add task
-        </button>
+        {!readOnly && (
+          <button
+            onClick={() =>
+              setEditing({
+                id: "",
+                phase: "",
+                task: "",
+                owner: "",
+                assignee: "",
+                startDate: "",
+                dueDate: "",
+                hardDeadline: false,
+                done: false,
+                notes: "",
+              })
+            }
+            className="btn btn-ghost !py-1.5 !text-xs"
+          >
+            Add task
+          </button>
+        )}
+        {readOnly && <span className="mono">View only</span>}
       </div>
 
-      {selected.size > 0 && (
+      {!readOnly && selected.size > 0 && (
         <div className="panel mt-3 flex flex-wrap items-center gap-3 p-3">
           <span className="mono">{selected.size} selected</span>
           <select
@@ -238,6 +244,7 @@ export default function Plan({
           onToggle={toggle}
           onEdit={setEditing}
           busy={busy}
+          readOnly={readOnly}
         />
       ) : (
         <ChartView tasks={visible} today={today} eventDate={eventDate} />
@@ -288,6 +295,7 @@ function ListView({
   onToggle,
   onEdit,
   busy,
+  readOnly = false,
 }: {
   tasks: Task[];
   today: string;
@@ -296,6 +304,7 @@ function ListView({
   onToggle: (t: Task) => void;
   onEdit: (t: Task) => void;
   busy: boolean;
+  readOnly?: boolean;
 }) {
   let phase = "";
   return (
@@ -311,18 +320,20 @@ function ListView({
                 t.done ? "opacity-50" : ""
               }`}
             >
-              <input
-                type="checkbox"
-                checked={selected.has(t.id)}
-                onChange={(e) => {
-                  const next = new Set(selected);
-                  e.target.checked ? next.add(t.id) : next.delete(t.id);
-                  setSelected(next);
-                }}
-              />
+              {!readOnly && (
+                <input
+                  type="checkbox"
+                  checked={selected.has(t.id)}
+                  onChange={(e) => {
+                    const next = new Set(selected);
+                    e.target.checked ? next.add(t.id) : next.delete(t.id);
+                    setSelected(next);
+                  }}
+                />
+              )}
               <button
-                onClick={() => onToggle(t)}
-                disabled={busy}
+                onClick={() => !readOnly && onToggle(t)}
+                disabled={busy || readOnly}
                 title={t.done ? "Mark not done" : "Mark done"}
                 className={`h-4 w-4 shrink-0 rounded border ${
                   t.done
@@ -338,10 +349,11 @@ function ListView({
                 {t.dueDate || "—"}
               </span>
               <button
-                onClick={() => onEdit(t)}
-                className={`flex-1 text-left text-sm hover:text-[var(--color-signal)] ${
-                  t.done ? "line-through" : ""
-                }`}
+                onClick={() => !readOnly && onEdit(t)}
+                disabled={readOnly}
+                className={`flex-1 text-left text-sm ${
+                  readOnly ? "" : "hover:text-[var(--color-signal)]"
+                } ${t.done ? "line-through" : ""}`}
               >
                 {t.task}
                 {t.hardDeadline && (

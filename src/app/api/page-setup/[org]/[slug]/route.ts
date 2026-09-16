@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { canAdminOrg, getSession } from "@/lib/auth";
+import { requireAccess } from "@/lib/access";
 import { db, schema } from "@/lib/db";
 import { generateDirections } from "@/lib/directions";
 import { getTournament } from "@/lib/tournament";
@@ -32,10 +32,8 @@ export async function POST(
   const found = getTournament(org, slug);
   if (!found) return NextResponse.json({ error: "Not found." }, { status: 404 });
 
-  const session = await getSession();
-  if (!session || !canAdminOrg(session.personId, found.org.id)) {
-    return NextResponse.json({ error: "Not authorised." }, { status: 403 });
-  }
+  const auth = await requireAccess(found.org.id, "page");
+  if (!auth.ok) return auth.response;
 
   const parsed = Body.safeParse(await req.json().catch(() => null));
   if (!parsed.success) {

@@ -1,11 +1,13 @@
-import { asc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { canAdminOrg, getSession } from "@/lib/auth";
+import { ROLE_BLURB, ROLE_LABEL, can, getAccess } from "@/lib/access";
+import { threadFor } from "@/lib/agent/runner";
 import { db, schema } from "@/lib/db";
 import { buildMetadata } from "@/lib/seo";
 import { getTeams, getTournament } from "@/lib/tournament";
 import Console from "./console";
+import Notes, { type Note } from "./notes";
 
 type Params = { params: Promise<{ org: string; slug: string }> };
 
@@ -17,14 +19,22 @@ export const metadata = buildMetadata({
   path: "/td",
 });
 
+type Msg = {
+  role: "user" | "assistant";
+  content: string;
+  toolCalls: { name: string; input: unknown; result: string }[] | null;
+  author?: string | null;
+};
+
 export default async function TdPage({ params }: Params) {
   const { org, slug } = await params;
   const found = getTournament(org, slug);
   if (!found) notFound();
 
-  const session = await getSession();
-  if (!session) redirect(`/login?next=/td/${org}/${slug}`);
-  if (!canAdminOrg(session.personId, found.org.id)) {
+  const access = await getAccess(found.org.id);
+  if (!access) {
+    const session = await (await import("@/lib/auth")).getSession();
+    if (!session) redirect(`/login?next=/td/${org}/${slug}`);
     return (
       <main className="mx-auto max-w-2xl px-6 py-24">
         <p className="mono">Not authorised</p>
@@ -37,6 +47,8 @@ export default async function TdPage({ params }: Params) {
       </main>
     );
   }
+  const { session, role } = access;
+  const isAdvisor = role === "advisor";
 
   const { tournament: t } = found;
   const teams = getTeams(t.id);
@@ -53,91 +65,154 @@ export default async function TdPage({ params }: Params) {
     .all()
     .filter((o) => o.status === "draft");
 
-  const history = db
-    .select()
-    .from(schema.agentMessages)
-    .where(eq(schema.agentMessages.tournamentId, t.id))
-    .orderBy(asc(schema.agentMessages.createdAt))
+  // Names for user turns, so a shared thread shows who said what.
+  const members = db
+    .select({ id: schema.people.id, name: schema.people.name, email: schema.people.email })
+    .from(schema.orgMembers)
+    .innerJoin(schema.people, eq(schema.people.id, schema.orgMembers.personId))
+    .where(eq(schema.orgMembers.orgId, found.org.id))
+    .all();
+  const nameOf = new Map(members.map((m) => [m.id, m.name ?? m.email]));
+
+  const loadThread = (thread: string): Msg[] =>
+    db
+      .select()
+      .from(schema.agentMessages)
+      .where(
+        and(
+          eq(schema.agentMessages.tournamentId, t.id),
+          eq(schema.agentMessages.thread, thread),
+        ),
+      )
+      .orderBy(asc(schema.agentMessages.createdAt))
+      .all()
+      .map((m) => ({
+        role: m.role as "user" | "assistant",
+        content: m.content,
+        toolCalls: m.toolCalls ? JSON.parse(m.toolCalls) : null,
+        author:
+          m.role === "user" && m.personId && m.personId !== session.personId
+            ? (nameOf.get(m.personId) ?? null)
+            : null,
+      }));
+
+  const myThread = threadFor(role, session.personId);
+  const history = loadThread(myThread);
+  const mainThread = isAdvisor ? loadThread("main") : undefined;
+
+  const notes: Note[] = db
+    .select({
+      id: schema.advisorNotes.id,
+      body: schema.advisorNotes.body,
+      createdAt: schema.advisorNotes.createdAt,
+      resolvedAt: schema.advisorNotes.resolvedAt,
+      personId: schema.advisorNotes.personId,
+      name: schema.people.name,
+      email: schema.people.email,
+    })
+    .from(schema.advisorNotes)
+    .innerJoin(schema.people, eq(schema.people.id, schema.advisorNotes.personId))
+    .where(eq(schema.advisorNotes.tournamentId, t.id))
+    .orderBy(desc(schema.advisorNotes.createdAt))
     .all()
-    .map((m) => ({
-      role: m.role as "user" | "assistant",
-      content: m.content,
-      toolCalls: m.toolCalls ? JSON.parse(m.toolCalls) : null,
-    }));
+    .map((n) => {
+      const m = db
+        .select({ role: schema.orgMembers.role })
+        .from(schema.orgMembers)
+        .where(
+          and(
+            eq(schema.orgMembers.orgId, found.org.id),
+            eq(schema.orgMembers.personId, n.personId),
+          ),
+        )
+        .get();
+      return {
+        id: n.id,
+        body: n.body,
+        author: n.name ?? n.email,
+        role: m?.role ?? "member",
+        createdAt: n.createdAt,
+        resolvedAt: n.resolvedAt,
+      };
+    });
 
   const today = new Date().toISOString().slice(0, 10);
   const open = tasks.filter((x) => !x.done);
   const late = open.filter((x) => x.dueDate && x.dueDate < today);
   const next = open.filter((x) => x.dueDate && x.dueDate >= today).slice(0, 6);
+  const openNotes = notes.filter((n) => !n.resolvedAt).length;
+
+  const nav: { href: string; label: string; show: boolean }[] = [
+    { href: `/dashboard?all=1`, label: "All tournaments", show: true },
+    { href: `/t/${org}/${slug}`, label: "Public page", show: true },
+    { href: `/td/${org}/${slug}/plan`, label: "Plan", show: true },
+    { href: `/td/${org}/${slug}/scores`, label: "Score entry", show: true },
+    {
+      href: `/td/${org}/${slug}/outreach`,
+      label: `Outreach${drafts.length > 0 ? ` (${drafts.length})` : ""}`,
+      show: true,
+    },
+    { href: `/td/${org}/${slug}/fields`, label: "Fields", show: true },
+    { href: `/td/${org}/${slug}/waivers`, label: "Waivers", show: true },
+    { href: `/td/${org}/${slug}/access`, label: "Access", show: true },
+    { href: `/td/${org}/${slug}/page-setup`, label: "Page setup", show: true },
+    { href: `/td/${org}/${slug}/doc`, label: "Document", show: true },
+    { href: `/td/${org}/${slug}/template`, label: "Save as template", show: can(role, "templates.save") },
+  ];
 
   return (
     <main className="mx-auto max-w-6xl px-6 py-8">
       <div className="flex flex-wrap items-baseline justify-between gap-3">
         <div>
-          <span className="mono">{found.org.name}</span>
+          <span className="mono">
+            {found.org.name} · you are {ROLE_LABEL[role].toLowerCase()}
+          </span>
           <h1 className="display mt-1 text-3xl">{t.name}</h1>
         </div>
-        <nav className="flex gap-4">
-          <Link href={`/t/${org}/${slug}`} className="mono hover:text-[var(--color-signal)]">
-            Public page
-          </Link>
-          <Link
-            href={`/td/${org}/${slug}/plan`}
-            className="mono hover:text-[var(--color-signal)]"
-          >
-            Plan
-          </Link>
-          <Link
-            href={`/td/${org}/${slug}/scores`}
-            className="mono hover:text-[var(--color-signal)]"
-          >
-            Score entry
-          </Link>
-          <Link
-            href={`/td/${org}/${slug}/outreach`}
-            className="mono hover:text-[var(--color-signal)]"
-          >
-            Outreach {drafts.length > 0 && `(${drafts.length})`}
-          </Link>
-          <Link
-            href={`/td/${org}/${slug}/fields`}
-            className="mono hover:text-[var(--color-signal)]"
-          >
-            Fields
-          </Link>
-          <Link
-            href={`/td/${org}/${slug}/waivers`}
-            className="mono hover:text-[var(--color-signal)]"
-          >
-            Waivers
-          </Link>
-          <Link
-            href={`/td/${org}/${slug}/access`}
-            className="mono hover:text-[var(--color-signal)]"
-          >
-            Access
-          </Link>
-          <Link
-            href={`/td/${org}/${slug}/page-setup`}
-            className="mono hover:text-[var(--color-signal)]"
-          >
-            Page setup
-          </Link>
-          <Link
-            href={`/td/${org}/${slug}/doc`}
-            className="mono hover:text-[var(--color-signal)]"
-          >
-            Document
-          </Link>
+        <nav className="flex flex-wrap gap-4">
+          {nav
+            .filter((n) => n.show)
+            .map((n) => (
+              <Link
+                key={n.href}
+                href={n.href}
+                className="mono hover:text-[var(--color-signal)]"
+              >
+                {n.label}
+              </Link>
+            ))}
         </nav>
       </div>
+
+      {(isAdvisor || role === "staff") && (
+        <p className="mono mt-3 normal-case tracking-normal text-[var(--color-dim)]">
+          {ROLE_BLURB[role]}
+        </p>
+      )}
 
       <hr className="rule my-6" />
 
       <div className="grid gap-8 lg:grid-cols-[1fr_20rem]">
-        <Console org={org} slug={slug} initial={history} />
+        <Console
+          org={org}
+          slug={slug}
+          initial={history}
+          role={role}
+          mainThread={mainThread}
+        />
 
         <aside className="space-y-5">
+          {(openNotes > 0 || isAdvisor || role === "staff") && (
+            <Notes
+              org={org}
+              slug={slug}
+              initial={notes}
+              canResolve={can(role, "tasks")}
+              meLabel={session.name ?? session.email}
+              compose={isAdvisor ? "prominent" : "quiet"}
+            />
+          )}
+
           <div className="panel p-4">
             <p className="mono">State</p>
             <dl className="mt-3 space-y-2 text-sm">
@@ -185,6 +260,17 @@ export default async function TdPage({ params }: Params) {
               </ul>
             )}
           </div>
+
+          {!isAdvisor && role !== "staff" && openNotes === 0 && (
+            <Notes
+              org={org}
+              slug={slug}
+              initial={notes}
+              canResolve
+              meLabel={session.name ?? session.email}
+              compose="quiet"
+            />
+          )}
         </aside>
       </div>
     </main>

@@ -15,10 +15,13 @@ export default function DocEditor({
   org,
   slug,
   initial,
+  readOnly = false,
 }: {
   org: string;
   slug: string;
   initial: string;
+  /** Everyone may read and download the document; applying it is TD-only. */
+  readOnly?: boolean;
 }) {
   const [text, setText] = useState(initial);
   const [report, setReport] = useState<Report | null>(null);
@@ -54,21 +57,26 @@ export default function DocEditor({
   return (
     <>
       <div className="mt-6 flex flex-wrap gap-2">
-        <button
-          onClick={() => send(true)}
-          disabled={busy}
-          className="btn btn-ghost disabled:opacity-40"
-        >
-          {busy ? "…" : "Check changes"}
-        </button>
-        <button
-          onClick={() => send(false)}
-          disabled={busy || !report?.ok}
-          title={report?.ok ? "" : "Check changes first"}
-          className="btn btn-primary disabled:opacity-30"
-        >
-          Apply
-        </button>
+        {readOnly && <span className="mono self-center">View only</span>}
+        {!readOnly && (
+          <>
+            <button
+              onClick={() => send(true)}
+              disabled={busy}
+              className="btn btn-ghost disabled:opacity-40"
+            >
+              {busy ? "…" : "Check changes"}
+            </button>
+            <button
+              onClick={() => send(false)}
+              disabled={busy || !report?.ok}
+              title={report?.ok ? "" : "Check changes first"}
+              className="btn btn-primary disabled:opacity-30"
+            >
+              Apply
+            </button>
+          </>
+        )}
         <a
           href={`/api/doc/${org}/${slug}`}
           download={`${slug}.175g.json`}
@@ -76,24 +84,28 @@ export default function DocEditor({
         >
           Download
         </a>
-        <a
-          href={`/api/doc/${org}/${slug}?contacts=include`}
-          download={`${slug}.backup.175g.json`}
-          title="Includes captain emails and phone numbers — treat as personal data"
-          className="btn btn-ghost"
-        >
-          Download with contacts
-        </a>
-        <button
-          onClick={() => {
-            setText(initial);
-            setReport(null);
-            setError(null);
-          }}
-          className="btn btn-ghost"
-        >
-          Reset
-        </button>
+        {!readOnly && (
+          <>
+            <a
+              href={`/api/doc/${org}/${slug}?contacts=include`}
+              download={`${slug}.backup.175g.json`}
+              title="Includes captain emails and phone numbers — treat as personal data"
+              className="btn btn-ghost"
+            >
+              Download with contacts
+            </a>
+            <button
+              onClick={() => {
+                setText(initial);
+                setReport(null);
+                setError(null);
+              }}
+              className="btn btn-ghost"
+            >
+              Reset
+            </button>
+          </>
+        )}
       </div>
 
       {error && <p className="mt-4 text-sm text-[var(--color-alert)]">{error}</p>}
@@ -182,6 +194,7 @@ export default function DocEditor({
           setReport(null);
         }}
         spellCheck={false}
+        readOnly={readOnly}
         rows={34}
         className="field mt-4 font-mono !text-xs leading-relaxed"
       />

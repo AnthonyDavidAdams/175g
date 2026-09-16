@@ -10,6 +10,9 @@ export const metadata: Metadata = buildMetadata({
   path: "/",
 });
 
+const UMAMI_SRC = process.env.NEXT_PUBLIC_UMAMI_SRC;
+const UMAMI_ID = process.env.NEXT_PUBLIC_UMAMI_WEBSITE_ID;
+
 export default function RootLayout({
   children,
 }: {
@@ -17,6 +20,11 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
+      <head>
+        {UMAMI_SRC && UMAMI_ID && (
+          <script defer src={UMAMI_SRC} data-website-id={UMAMI_ID} />
+        )}
+      </head>
       <body>{children}</body>
     </html>
   );

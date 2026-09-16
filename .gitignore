@@ -8,3 +8,4 @@ drizzle/
 *.db-wal
 *.db-shm
 .DS_Store
+tsconfig.tsbuildinfo

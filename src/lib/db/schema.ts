@@ -559,10 +559,103 @@ export const orgMembers = sqliteTable(
   {
     orgId: text("org_id").notNull().references(() => orgs.id),
     personId: text("person_id").notNull().references(() => people.id),
-    role: text("role").notNull().default("td"), // owner | td | staff
+    /**
+     * owner   — everything, including who else has access
+     * td      — runs the tournament: agent, outreach, waivers, publishing
+     * staff   — gameday hands: scores, tasks, announcements, field map
+     * advisor — oversight only: sees everything, changes nothing, leaves notes.
+     *           Alumni, a faculty sponsor, last year's TD, a mentor from
+     *           another program. Enforced in src/lib/access.ts.
+     */
+    role: text("role").notNull().default("td"),
     createdAt: integer("created_at").notNull().default(now),
   },
   (t) => [primaryKey({ columns: [t.orgId, t.personId] })],
+);
+
+/**
+ * Notes left for the people running the tournament — mostly by advisors, who
+ * can see everything and change nothing, so this is how they help. Staff use
+ * it too ("field 3 is under water"). The agent reads open notes in get_status.
+ */
+export const advisorNotes = sqliteTable(
+  "advisor_notes",
+  {
+    id: text("id").primaryKey(),
+    tournamentId: text("tournament_id").notNull().references(() => tournaments.id),
+    personId: text("person_id").notNull().references(() => people.id),
+    body: text("body").notNull(),
+    resolvedAt: integer("resolved_at"),
+    resolvedBy: text("resolved_by").references(() => people.id),
+    createdAt: integer("created_at").notNull().default(now),
+  },
+  (t) => [index("advisor_notes_tournament_idx").on(t.tournamentId)],
+);
+
+/* ---------------------------------------------------------------------------
+ * Event templates
+ *
+ * A template is a tournament with the edition-specific parts removed: no
+ * teams, no games, no dates — deadlines and tasks become offsets from the
+ * event date. Everything a program learned the hard way (the refund policy
+ * that survived a weather cancellation, the waiver text, the volunteer
+ * shift grid, which sponsors to approach) travels to next year, to a sister
+ * program, or to a stranger who found it in the public gallery.
+ *
+ * `orgId` null means built-in. `visibility` "org" is private to members of
+ * the owning org; "link" is reachable by anyone with the share token;
+ * "public" appears in the gallery.
+ * ------------------------------------------------------------------------- */
+
+export const templates = sqliteTable(
+  "templates",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id").references(() => orgs.id),
+    createdBy: text("created_by").references(() => people.id),
+    sourceTournamentId: text("source_tournament_id").references(() => tournaments.id),
+    name: text("name").notNull(),
+    description: text("description"),
+    /** JSON, see TemplateDoc in src/lib/templates.ts */
+    doc: text("doc").notNull(),
+    visibility: text("visibility").notNull().default("org"), // org | link | public
+    shareToken: text("share_token").notNull().unique(),
+    useCount: integer("use_count").notNull().default(0),
+    createdAt: integer("created_at").notNull().default(now),
+    updatedAt: integer("updated_at"),
+  },
+  (t) => [index("templates_org_idx").on(t.orgId)],
+);
+
+/* ---------------------------------------------------------------------------
+ * Intake: the agent talking to someone who hasn't signed in yet.
+ *
+ * The landing page is the agent. A visitor says what they're trying to run,
+ * the agent works out the shape of it and records a draft; when they're ready
+ * it asks for an email and sends a sign-in link. Clicking the link creates the
+ * program and tournament from the draft and carries the conversation into the
+ * TD console, so nothing they said has to be said twice.
+ *
+ * Keyed by an anonymous cookie. Rate-limited by IP because it costs money.
+ * ------------------------------------------------------------------------- */
+
+export const intakeSessions = sqliteTable(
+  "intake_sessions",
+  {
+    id: text("id").primaryKey(),
+    ip: text("ip"),
+    /** JSON array of { role, content } */
+    messages: text("messages").notNull().default("[]"),
+    /** JSON: what the agent has learned so far — name, school, dates, division… */
+    draft: text("draft").notNull().default("{}"),
+    templateId: text("template_id"),
+    email: text("email"),
+    userTurns: integer("user_turns").notNull().default(0),
+    claimedTournamentId: text("claimed_tournament_id").references(() => tournaments.id),
+    createdAt: integer("created_at").notNull().default(now),
+    updatedAt: integer("updated_at"),
+  },
+  (t) => [index("intake_ip_idx").on(t.ip)],
 );
 
 /* ---------------------------------------------------------------------------
@@ -574,12 +667,23 @@ export const agentMessages = sqliteTable(
   {
     id: text("id").primaryKey(),
     tournamentId: text("tournament_id").notNull().references(() => tournaments.id),
+    /**
+     * "main" is the shared conversation the organisers have with the agent.
+     * Advisors get their own thread ("advisor:<personId>") so oversight
+     * questions don't interleave with the TD's working conversation.
+     */
+    thread: text("thread").notNull().default("main"),
+    /** Who typed the user turn; null for the assistant or legacy rows. */
+    personId: text("person_id").references(() => people.id),
     role: text("role").notNull(), // user | assistant
     content: text("content").notNull(),
     toolCalls: text("tool_calls"), // JSON, for transparency in the UI
     createdAt: integer("created_at").notNull().default(now),
   },
-  (t) => [index("agent_tournament_idx").on(t.tournamentId)],
+  (t) => [
+    index("agent_tournament_idx").on(t.tournamentId),
+    index("agent_thread_idx").on(t.tournamentId, t.thread),
+  ],
 );
 
 /** Photos for the public page. Stored on the volume, served through the app. */

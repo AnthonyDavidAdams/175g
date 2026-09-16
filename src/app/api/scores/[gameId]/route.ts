@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { advanceTournament } from "@/lib/advance";
-import { canAdminOrg, getSession } from "@/lib/auth";
+import { requireAccess } from "@/lib/access";
 import { db, schema } from "@/lib/db";
 
 export async function POST(
@@ -9,8 +9,6 @@ export async function POST(
   { params }: { params: Promise<{ gameId: string }> },
 ) {
   const { gameId } = await params;
-  const session = await getSession();
-  if (!session) return NextResponse.json({ error: "Not signed in." }, { status: 401 });
 
   const game = db
     .select()
@@ -24,9 +22,10 @@ export async function POST(
     .from(schema.tournaments)
     .where(eq(schema.tournaments.id, game.tournamentId))
     .get();
-  if (!tournament || !canAdminOrg(session.personId, tournament.orgId)) {
-    return NextResponse.json({ error: "Not authorised." }, { status: 403 });
-  }
+  if (!tournament) return NextResponse.json({ error: "Not found." }, { status: 404 });
+  const auth = await requireAccess(tournament.orgId, "scores");
+  if (!auth.ok) return auth.response;
+  const { session } = auth.access;
 
   const body = await req.json().catch(() => null);
 

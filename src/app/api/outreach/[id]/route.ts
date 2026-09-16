@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
-import { canAdminOrg, getSession } from "@/lib/auth";
+import { requireAccess } from "@/lib/access";
 import { db, schema } from "@/lib/db";
 import { sendEmail } from "@/lib/email";
 
@@ -10,8 +10,6 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
-  const session = await getSession();
-  if (!session) return NextResponse.json({ error: "Not signed in." }, { status: 401 });
 
   const draft = db
     .select()
@@ -25,9 +23,11 @@ export async function POST(
     .from(schema.tournaments)
     .where(eq(schema.tournaments.id, draft.tournamentId))
     .get();
-  if (!tournament || !canAdminOrg(session.personId, tournament.orgId)) {
-    return NextResponse.json({ error: "Not authorised." }, { status: 403 });
-  }
+  if (!tournament) return NextResponse.json({ error: "Not found." }, { status: 404 });
+  // Approving outreach puts the program's name on an email. TD and owner only.
+  const auth = await requireAccess(tournament.orgId, "outreach");
+  if (!auth.ok) return auth.response;
+  const { session } = auth.access;
 
   const body = await req.json().catch(() => ({}));
   const action = body?.action;

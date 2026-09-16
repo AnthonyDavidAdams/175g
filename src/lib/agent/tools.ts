@@ -1,13 +1,21 @@
 import type Anthropic from "@anthropic-ai/sdk";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { db, schema } from "../db";
+import { can, type Role } from "../access";
 import { advanceTournament } from "../advance";
 import { checkCapacity, expand, type CustomFormatSpec } from "../customFormat";
 import { buildFormat, layOutSchedule } from "../formats";
 import { allocate, fieldCountWarnings } from "../multiDivision";
 import { describeSites, travelWarnings } from "../multiSite";
 import { applyDoc, toDoc } from "../tournamentDoc";
+import {
+  buildTemplate,
+  createTemplate,
+  listTemplatesFor,
+  parseTemplate,
+  summarize,
+} from "../templates";
 import { buildTimeline } from "../timeline";
 import { formatDateRange } from "../tournament";
 import {
@@ -577,9 +585,91 @@ export const TOOLS: Anthropic.Tool[] = [
       "Call this at the start of a conversation before asking the TD anything.",
     input_schema: { type: "object", properties: {} },
   },
+  {
+    name: "leave_note",
+    description:
+      "Leave a note for the people running the tournament. This is how an advisor " +
+      "or a staff member gets something in front of the TD without changing the " +
+      "tournament themselves. Open notes appear in the TD's console and in " +
+      "get_status until the TD resolves them. Use it when the person you are " +
+      "talking to cannot make the change but wants the TD to see it.",
+    input_schema: {
+      type: "object",
+      properties: {
+        body: { type: "string", description: "The note, in the writer's voice. Specific and short." },
+      },
+      required: ["body"],
+    },
+  },
+  {
+    name: "save_template",
+    description:
+      "Package this tournament as a reusable event template: its policies, " +
+      "deadlines as offsets from the event date, the task list, waiver text, " +
+      "sponsor prospects (organisations only, no contacts), and optionally the " +
+      "venue and field layout. No teams, games, dates or personal data. Templates " +
+      "are how a program hands next year's TD — or another program — what worked. " +
+      "Say the template's URL back so they can share it.",
+    input_schema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "e.g. 'Midwest Throwdown — two-day 16-team mixed weekend'" },
+        description: {
+          type: "string",
+          description: "Two or three sentences on who this is for and what it assumes.",
+        },
+        includeVenue: {
+          type: "boolean",
+          description:
+            "Include venue, sites, fields and site markers. Yes for next year at the " +
+            "same fields; no when sharing with another program.",
+        },
+        visibility: {
+          type: "string",
+          description:
+            "org (members of this program only, default), link (anyone with the link), " +
+            "public (listed in the gallery for any program to use).",
+        },
+      },
+      required: ["name"],
+    },
+  },
+  {
+    name: "list_templates",
+    description:
+      "List event templates available to this program: its own, plus public and " +
+      "built-in ones. Use when the TD asks how another program did it, wants to " +
+      "start next year from this year, or asks what a typical plan looks like.",
+    input_schema: { type: "object", properties: {} },
+  },
 ];
 
-type Ctx = { tournamentId: string; orgId: string };
+/* -------------------------------------------------------------------------
+ * Which tools each role gets. The agent cannot do what the person cannot.
+ * ---------------------------------------------------------------------- */
+
+const READ_TOOLS = new Set(["get_status", "get_schedule", "get_tournament_doc", "list_templates"]);
+const OPS_TOOLS = new Set(["edit_game", "post_announcement", "manage_tasks"]);
+const NOTE_TOOLS = new Set(["leave_note"]);
+const TEMPLATE_SAVE = new Set(["save_template"]);
+
+export function toolsForRole(role: Role): Anthropic.Tool[] {
+  return TOOLS.filter((t) => {
+    if (READ_TOOLS.has(t.name)) return true;
+    if (NOTE_TOOLS.has(t.name)) return can(role, "notes") && !can(role, "agent.mutate");
+    if (TEMPLATE_SAVE.has(t.name)) return can(role, "templates.save");
+    if (OPS_TOOLS.has(t.name)) return can(role, "agent.ops");
+    return can(role, "agent.mutate");
+  });
+}
+
+type Ctx = {
+  tournamentId: string;
+  orgId: string;
+  /** Who is talking to the agent. Absent for legacy callers (Telegram). */
+  personId?: string;
+  role?: Role;
+};
 
 export async function runTool(
   name: string,
@@ -625,6 +715,12 @@ export async function runTool(
       return applyTournamentDoc(input, ctx);
     case "get_status":
       return getStatus(ctx);
+    case "leave_note":
+      return leaveNote(input, ctx);
+    case "save_template":
+      return saveTemplate(input, ctx);
+    case "list_templates":
+      return listTemplates(ctx);
     default:
       return `Unknown tool: ${name}`;
   }
@@ -2270,5 +2366,103 @@ function getStatus(ctx: Ctx) {
     lines.push("", "  NEXT UP:");
     for (const x of next) lines.push(`    - ${x.dueDate} ${x.task} (${x.owner})`);
   }
+
+  const openNotes = db
+    .select({
+      body: schema.advisorNotes.body,
+      createdAt: schema.advisorNotes.createdAt,
+      author: schema.people.name,
+      email: schema.people.email,
+      role: schema.orgMembers.role,
+    })
+    .from(schema.advisorNotes)
+    .innerJoin(schema.people, eq(schema.people.id, schema.advisorNotes.personId))
+    .leftJoin(
+      schema.orgMembers,
+      and(
+        eq(schema.orgMembers.personId, schema.advisorNotes.personId),
+        eq(schema.orgMembers.orgId, ctx.orgId),
+      ),
+    )
+    .where(
+      and(
+        eq(schema.advisorNotes.tournamentId, ctx.tournamentId),
+        isNull(schema.advisorNotes.resolvedAt),
+      ),
+    )
+    .all();
+  if (openNotes.length) {
+    lines.push("", "OPEN NOTES FROM ADVISORS AND STAFF (raise these with the TD):");
+    for (const n of openNotes) {
+      const who = n.author ?? n.email;
+      lines.push(`  - [${n.role ?? "member"}] ${who}: ${n.body}`);
+    }
+  }
   return lines.join("\n");
+}
+
+/* -------------------------------------------------------------------------
+ * Notes and templates
+ * ---------------------------------------------------------------------- */
+
+function leaveNote(input: Record<string, any>, ctx: Ctx) {
+  if (!ctx.personId) return "Notes need a signed-in author; this channel has none.";
+  const body = String(input.body ?? "").trim();
+  if (!body) return "Empty note.";
+  db.insert(schema.advisorNotes)
+    .values({ id: nanoid(), tournamentId: ctx.tournamentId, personId: ctx.personId, body })
+    .run();
+  return "Note left. The TD will see it in their console and the agent will raise it in their next status check.";
+}
+
+function saveTemplate(input: Record<string, any>, ctx: Ctx) {
+  const name = String(input.name ?? "").trim();
+  if (!name) return "A template needs a name.";
+  const visibility = ["org", "link", "public"].includes(input.visibility)
+    ? (input.visibility as "org" | "link" | "public")
+    : "org";
+  const doc = buildTemplate(ctx.tournamentId, { includeVenue: !!input.includeVenue });
+  const row = createTemplate({
+    orgId: ctx.orgId,
+    createdBy: ctx.personId ?? null,
+    sourceTournamentId: ctx.tournamentId,
+    name,
+    description: input.description ?? null,
+    doc,
+    visibility,
+  });
+  const sum = summarize(doc);
+  const url = `/templates/${row.id}` + (visibility === "link" ? `?token=${row.shareToken}` : "");
+  return [
+    `Saved template "${row.name}" (${visibility}).`,
+    `  ${sum.tasks} tasks, ${sum.waivers} waivers, ${sum.sponsors} sponsor prospects` +
+      (sum.hasVenue ? `, venue + ${sum.fields} fields` : ", no venue"),
+    `  URL: ${url}`,
+    visibility === "org"
+      ? "  Only members of this program can see it. Change visibility on the template page to share it."
+      : visibility === "link"
+        ? "  Anyone with that link can start a tournament from it."
+        : "  Listed in the public gallery.",
+  ].join("\n");
+}
+
+function listTemplates(ctx: Ctx) {
+  const rows = listTemplatesFor(ctx.personId ?? null).filter(
+    (r) => r.orgId === ctx.orgId || r.orgId === null || r.visibility === "public",
+  );
+  if (!rows.length) return "No templates yet. save_template packages this tournament as one.";
+  return rows
+    .map((r) => {
+      const sum = summarize(parseTemplate(r));
+      const scope = r.orgId === null ? "built-in" : r.orgId === ctx.orgId ? "this program" : "public";
+      return (
+        `- ${r.name} [${scope}] /templates/${r.id}\n` +
+        `    ${sum.durationDays}-day ${sum.division ?? "any-division"}, ` +
+        `${sum.teamTarget ?? "?"} teams on ${sum.fieldCount ?? "?"} fields, ` +
+        `${sum.tasks} tasks, ${sum.waivers} waivers` +
+        (sum.hasVenue ? `, venue: ${sum.venueName ?? "included"}` : "") +
+        (r.description ? `\n    ${r.description}` : "")
+      );
+    })
+    .join("\n");
 }

@@ -1,7 +1,7 @@
 import { asc, eq } from "drizzle-orm";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { canAdminOrg, getSession } from "@/lib/auth";
+import { can, getAccess } from "@/lib/access";
 import { db, schema } from "@/lib/db";
 import { buildMetadata } from "@/lib/seo";
 import { getTournament } from "@/lib/tournament";
@@ -22,9 +22,9 @@ export default async function PlanPage({ params }: Params) {
   const found = getTournament(org, slug);
   if (!found) notFound();
 
-  const session = await getSession();
-  if (!session) redirect(`/login?next=/td/${org}/${slug}/plan`);
-  if (!canAdminOrg(session.personId, found.org.id)) notFound();
+  const access = await getAccess(found.org.id);
+  if (!access) redirect(`/login?next=/td/${org}/${slug}/plan`);
+  const readOnly = !can(access.role, "tasks");
 
   const tasks = db
     .select()
@@ -61,6 +61,7 @@ export default async function PlanPage({ params }: Params) {
         slug={slug}
         eventDate={found.tournament.startDate}
         people={people.map((p) => p.name || p.email)}
+        readOnly={readOnly}
         tasks={tasks.map((t) => ({
           id: t.id,
           phase: t.phase ?? "",

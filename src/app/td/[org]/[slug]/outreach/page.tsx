@@ -1,7 +1,7 @@
 import { desc, eq } from "drizzle-orm";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { canAdminOrg, getSession } from "@/lib/auth";
+import { can, getAccess } from "@/lib/access";
 import { db, schema } from "@/lib/db";
 import { buildMetadata } from "@/lib/seo";
 import { getTournament } from "@/lib/tournament";
@@ -22,9 +22,9 @@ export default async function OutreachPage({ params }: Params) {
   const found = getTournament(org, slug);
   if (!found) notFound();
 
-  const session = await getSession();
-  if (!session) redirect(`/login?next=/td/${org}/${slug}/outreach`);
-  if (!canAdminOrg(session.personId, found.org.id)) notFound();
+  const access = await getAccess(found.org.id);
+  if (!access) redirect(`/login?next=/td/${org}/${slug}/outreach`);
+  const readOnly = !can(access.role, "outreach");
 
   const drafts = db
     .select()
@@ -40,7 +40,7 @@ export default async function OutreachPage({ params }: Params) {
       </Link>
       <h1 className="display mt-3 text-3xl">Outreach queue</h1>
       <p className="mono mt-2">Nothing sends until you approve it</p>
-      <Queue drafts={drafts} />
+      <Queue drafts={drafts} readOnly={readOnly} />
     </main>
   );
 }

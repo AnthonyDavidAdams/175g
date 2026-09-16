@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { canAdminOrg, getSession } from "@/lib/auth";
+import { can, getAccess } from "@/lib/access";
 import { db, schema } from "@/lib/db";
 import { buildMetadata } from "@/lib/seo";
 import { getTournament } from "@/lib/tournament";
@@ -23,9 +23,9 @@ export default async function WaiversPage({ params }: Params) {
   const found = getTournament(org, slug);
   if (!found) notFound();
 
-  const session = await getSession();
-  if (!session) redirect(`/login?next=/td/${org}/${slug}/waivers`);
-  if (!canAdminOrg(session.personId, found.org.id)) notFound();
+  const access = await getAccess(found.org.id);
+  if (!access) redirect(`/login?next=/td/${org}/${slug}/waivers`);
+  const readOnly = !can(access.role, "waivers");
 
   const waivers = db
     .select()
@@ -66,6 +66,27 @@ export default async function WaiversPage({ params }: Params) {
         {LEGAL_DISCLAIMER}
       </p>
 
+      {readOnly ? (
+        <div className="mt-8 space-y-4">
+          <p className="mono">View only — waiver text is the TD&apos;s to change</p>
+          {waivers.length === 0 && (
+            <p className="text-[var(--color-dim)]">No waivers yet.</p>
+          )}
+          {waivers.map((w) => (
+            <details key={w.id} className="panel p-5">
+              <summary className="cursor-pointer">
+                <span className="font-medium">{w.title}</span>
+                <span className="mono ml-3">
+                  {w.audience} · v{w.version} · {counts[w.id] ?? 0} signed
+                </span>
+              </summary>
+              <pre className="mt-4 font-sans text-sm leading-relaxed whitespace-pre-wrap text-[var(--color-dim)]">
+                {w.body}
+              </pre>
+            </details>
+          ))}
+        </div>
+      ) : (
       <WaiverEditor
         org={org}
         slug={slug}
@@ -84,6 +105,7 @@ export default async function WaiversPage({ params }: Params) {
           signatureCount: counts[w.id] ?? 0,
         }))}
       />
+      )}
     </main>
   );
 }

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { runAgent } from "@/lib/agent/runner";
-import { canAdminOrg, getSession } from "@/lib/auth";
+import { runAgent, threadFor } from "@/lib/agent/runner";
+import { requireAccess } from "@/lib/access";
 import { getTournament } from "@/lib/tournament";
 
 export async function POST(
@@ -9,18 +9,13 @@ export async function POST(
 ) {
   const { org, slug } = await params;
 
-  const session = await getSession();
-  if (!session) {
-    return NextResponse.json({ error: "Not signed in." }, { status: 401 });
-  }
-
   const found = getTournament(org, slug);
   if (!found) {
     return NextResponse.json({ error: "Tournament not found." }, { status: 404 });
   }
-  if (!canAdminOrg(session.personId, found.org.id)) {
-    return NextResponse.json({ error: "Not authorised." }, { status: 403 });
-  }
+  const auth = await requireAccess(found.org.id, "agent.chat");
+  if (!auth.ok) return auth.response;
+  const { session, role } = auth.access;
 
   const body = await req.json().catch(() => null);
   const message = typeof body?.message === "string" ? body.message.trim() : "";
@@ -36,7 +31,11 @@ export async function POST(
   }
 
   try {
-    const turn = await runAgent(found.tournament.id, found.org.id, message);
+    const turn = await runAgent(found.tournament.id, found.org.id, message, {
+      role,
+      personId: session.personId,
+      thread: threadFor(role, session.personId),
+    });
     return NextResponse.json(turn);
   } catch (err) {
     console.error("[agent]", err);

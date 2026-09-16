@@ -4,8 +4,10 @@ import { useState } from "react";
 
 export default function NewTournamentForm({
   orgs,
+  template,
 }: {
   orgs: { slug: string; name: string }[];
+  template?: { id: string; token: string | null } | null;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -36,6 +38,8 @@ export default function NewTournamentForm({
               ? false
               : null,
         teamTarget: Number(fd.get("teamTarget")) || null,
+        templateId: template?.id ?? null,
+        templateToken: template?.token ?? null,
       }),
     });
     const data = await res.json().catch(() => ({}));
@@ -168,8 +172,9 @@ export default function NewTournamentForm({
           The agent will talk you through the trade if you leave it undecided.
         </p>
         <p className="mono mt-2 normal-case tracking-normal">
-          Everything except the two names can wait — leave them blank and the agent
-          will work through them with you.
+          {template
+            ? "The template fills in what you leave blank. A start date lets it put real dates on every deadline."
+            : "Everything except the two names can wait — leave them blank and the agent will work through them with you."}
         </p>
       </section>
 

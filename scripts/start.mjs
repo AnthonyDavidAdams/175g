@@ -24,9 +24,16 @@ if (push.status !== 0) {
 }
 console.log("[175g] schema up to date");
 
-// Best-effort seed (idempotent). Never blocks startup.
-const seed = spawnSync("node", ["scripts/seed.mjs"], { stdio: "inherit", env: childEnv });
-if (seed.status !== 0) console.warn(`[175g] seed exited ${seed.status} (continuing)`);
+// Built-in event templates (idempotent, keyed by fixed ids). Never blocks startup.
+const tpl = spawnSync("node", ["scripts/seed-templates.mjs"], { stdio: "inherit", env: childEnv });
+if (tpl.status !== 0) console.warn(`[175g] template seed exited ${tpl.status} (continuing)`);
+
+// The demo tournament is opt-in. Real deployments should not carry a fake
+// public event; set SEED_DEMO=1 for a local or showcase instance.
+if (process.env.SEED_DEMO === "1") {
+  const seed = spawnSync("node", ["scripts/seed.mjs"], { stdio: "inherit", env: childEnv });
+  if (seed.status !== 0) console.warn(`[175g] seed exited ${seed.status} (continuing)`);
+}
 
 const next = spawn("npx", ["next", "start", "-p", process.env.PORT || "3000"], {
   stdio: "inherit",

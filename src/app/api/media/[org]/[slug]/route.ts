@@ -3,7 +3,7 @@ import { nanoid } from "nanoid";
 import fs from "node:fs";
 import path from "node:path";
 import { NextResponse } from "next/server";
-import { canAdminOrg, getSession } from "@/lib/auth";
+import { requireAccess } from "@/lib/access";
 import { db, schema } from "@/lib/db";
 import { getTournament } from "@/lib/tournament";
 
@@ -31,10 +31,8 @@ export async function POST(
   const found = getTournament(org, slug);
   if (!found) return NextResponse.json({ error: "Not found." }, { status: 404 });
 
-  const session = await getSession();
-  if (!session || !canAdminOrg(session.personId, found.org.id)) {
-    return NextResponse.json({ error: "Not authorised." }, { status: 403 });
-  }
+  const auth = await requireAccess(found.org.id, "page");
+  if (!auth.ok) return auth.response;
 
   const form = await req.formData().catch(() => null);
   const file = form?.get("file");
@@ -107,10 +105,8 @@ export async function DELETE(
   const found = getTournament(org, slug);
   if (!found) return NextResponse.json({ error: "Not found." }, { status: 404 });
 
-  const session = await getSession();
-  if (!session || !canAdminOrg(session.personId, found.org.id)) {
-    return NextResponse.json({ error: "Not authorised." }, { status: 403 });
-  }
+  const auth = await requireAccess(found.org.id, "page");
+  if (!auth.ok) return auth.response;
 
   const body = await req.json().catch(() => null);
   const row = db

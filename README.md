@@ -35,13 +35,17 @@ manual wins and the code cites it.
 ```
 src/
   app/
-    page.tsx                    marketing site
+    page.tsx                    the landing page IS the agent: talk before sign-in
+    start/                      where the front-page sign-in link lands; turns the
+                                conversation into a program + tournament
     login/                      magic-link sign-in
-    dashboard/                  a TD's tournaments
+    dashboard/                  a TD's tournaments (one tournament → straight to it)
+    templates/                  event template gallery + detail/share pages
     t/[org]/[slug]/             PUBLIC: info, schedule, standings, teams,
                                 apply, volunteer, waiver
     td/[org]/[slug]/            PRIVATE: agent console, score entry, outreach
-                                queue, field map, waivers, access
+                                queue, field map, waivers, access, notes,
+                                save-as-template
     api/
       agent/[org]/[slug]/       the TD agent turn loop
       auth/{request,verify}/    magic link issue + consume
@@ -51,11 +55,17 @@ src/
       outreach/[id]/            approve-and-send or discard
       waivers/[org]/[slug]/     manage templates, and public signing
       fields/[org]/[slug]/      save the field layout
-      access/[org]/             add and remove org members
+      access/[org]/             add, remove, re-role org members
+      notes/[org]/[slug]/       advisor and staff notes for the organisers
+      templates/                save, list, share, apply event templates
+      intake/                   the front-page agent (anonymous, rate-limited)
       telegram/                 bot webhook
   lib/
     db/schema.ts                Drizzle schema (see Tenancy below)
-    agent/{tools,runner}.ts     tool definitions + the turn loop
+    agent/{tools,runner}.ts     tool definitions + the turn loop, role-filtered
+    agent/intake.ts             the pre-sign-in agent and its limits
+    access.ts                   roles → permissions; the one place they are defined
+    templates.ts                tournament ↔ template (dates become offsets)
     formats.ts                  USAU pools, seeding, brackets, round layout
     customFormat.ts             everything the USAU library doesn't cover
     advance.ts                  resolves bracket placeholders as scores land
@@ -80,6 +90,54 @@ which is what lets year two start from year one instead of from nothing.
 The `people` table is the cross-tournament directory. Role tags (`player`,
 `captain`, `coach`, `organizer`, `volunteer`) live on `roster_entries`, not on
 the person, so someone can be a captain one year and an organizer the next.
+
+## Roles
+
+Access is granted per program, so it carries across editions. Four roles,
+defined once in `src/lib/access.ts` and enforced in every API route, every
+private page, and the agent's tool set:
+
+| role | can |
+|---|---|
+| **owner** | everything, including who has access and who owns the program |
+| **td** | run the tournament: agent, outreach, waivers, publishing, scores |
+| **staff** | gameday hands: scores, tasks, announcements, the field map |
+| **advisor** | see everything, change nothing, leave notes, share templates |
+
+Advisors are the alumni who ran it before, the faculty sponsor, the mentor
+from another program. They see every private page read-only, read the
+organisers' conversation with the agent, and get their own agent thread with
+read-only tools. Their way of helping is **notes** — which the TD sees in the
+console and the agent raises in `get_status` — and **templates**.
+
+## Event templates
+
+A template is a tournament with the edition taken out: no teams, no games, no
+dates. Deadlines and tasks become offsets from the event date. What travels is
+the part that took years to learn: the refund policy, waiver text, the task
+list with real lead times, which sponsors to approach, and optionally the venue
+and field layout. Nothing personal travels — no contacts, no payment handles.
+
+Anyone in a program can save one (`/td/…/template`, or ask the agent). Owners,
+TDs and advisors can share it: program-only, by link, or in the public gallery
+at `/templates`. Starting a tournament from a template (`/new?template=…`, or
+the front-page agent) applies it through the same document machinery as
+`applyDoc`, so the destructive-change guard still holds.
+
+Two built-in templates seed on boot (`scripts/seed-templates.mjs`).
+
+## The landing page is the agent
+
+Visitors talk to the tournament director before they have an account. The
+intake agent (`src/lib/agent/intake.ts`) works out what they want to run,
+records a draft, and when there is enough, asks for an email and sends the
+sign-in link. Clicking it lands on `/start`, which creates the program and the
+tournament from the draft, applies a chosen template, and copies the
+conversation into the console's main thread.
+
+It spends API tokens for anonymous visitors, so it is capped per session, per
+IP per hour, and per day (`PUBLIC_AGENT_*`), and `PUBLIC_AGENT=0` turns it off
+in favour of a plain start form.
 
 ## Two invariants
 
@@ -180,6 +238,13 @@ Without `AWS_ACCESS_KEY_ID`, emails are logged to the console rather than sent �
 magic links still work, you just copy them from the terminal.
 
 The TD console needs `ANTHROPIC_API_KEY`; everything else works without it.
+
+## Operations
+
+- `/admin` — operator view, HTTP basic auth against `ADMIN_PASSWORD`.
+- Umami analytics via `NEXT_PUBLIC_UMAMI_SRC` + `NEXT_PUBLIC_UMAMI_WEBSITE_ID`.
+- The demo tournament seeds only with `SEED_DEMO=1`;
+  `node scripts/remove-demo.mjs --yes` removes it from an existing database.
 
 ## Deploy
 

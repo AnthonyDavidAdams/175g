@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { canAdminOrg, getSession } from "@/lib/auth";
+import { can, getAccess } from "@/lib/access";
 import { buildMetadata } from "@/lib/seo";
 import { getTournament, resolvedGames } from "@/lib/tournament";
 import ScoreEntry from "./score-entry";
@@ -20,9 +20,9 @@ export default async function ScoresPage({ params }: Params) {
   const found = getTournament(org, slug);
   if (!found) notFound();
 
-  const session = await getSession();
-  if (!session) redirect(`/login?next=/td/${org}/${slug}/scores`);
-  if (!canAdminOrg(session.personId, found.org.id)) notFound();
+  const access = await getAccess(found.org.id);
+  if (!access) redirect(`/login?next=/td/${org}/${slug}/scores`);
+  const readOnly = !can(access.role, "scores");
 
   const games = resolvedGames(found.tournament.id).map((g) => ({
     id: g.id,
@@ -45,8 +45,9 @@ export default async function ScoresPage({ params }: Params) {
       </Link>
       <h1 className="display mt-3 text-3xl">Score entry</h1>
       <p className="mono mt-2">
-        Collect actively — don&apos;t wait for teams to report. Click a field number
-        to move a game.
+        {readOnly
+          ? "View only — your role here can't enter scores"
+          : "Collect actively — don't wait for teams to report. Click a field number to move a game."}
       </p>
 
       {games.length === 0 ? (
@@ -54,7 +55,7 @@ export default async function ScoresPage({ params }: Params) {
           No schedule yet. Ask the agent to generate one.
         </p>
       ) : (
-        <ScoreEntry games={games} />
+        <ScoreEntry games={games} readOnly={readOnly} />
       )}
     </main>
   );

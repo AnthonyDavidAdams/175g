@@ -3,7 +3,8 @@ import { nanoid } from "nanoid";
 import { headers } from "next/headers";
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { canAdminOrg, getSession, upsertPerson } from "@/lib/auth";
+import { upsertPerson } from "@/lib/auth";
+import { requireAccess } from "@/lib/access";
 import { db, schema } from "@/lib/db";
 import { formatDateRange, getTournament } from "@/lib/tournament";
 import { fillTemplate, templateByKey } from "@/lib/waiverTemplates";
@@ -111,12 +112,9 @@ export async function POST(
     return NextResponse.json({ ok: true });
   }
 
-  // --- Everything else requires org admin. --------------------------------
-  const session = await getSession();
-  if (!session) return NextResponse.json({ error: "Not signed in." }, { status: 401 });
-  if (!canAdminOrg(session.personId, found.org.id)) {
-    return NextResponse.json({ error: "Not authorised." }, { status: 403 });
-  }
+  // --- Everything else rewrites legal text: TD and owner only. -------------
+  const auth = await requireAccess(found.org.id, "waivers");
+  if (!auth.ok) return auth.response;
 
   const parsed = Manage.safeParse(raw);
   if (!parsed.success) {

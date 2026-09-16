@@ -1,7 +1,7 @@
 import { asc, eq } from "drizzle-orm";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { canAdminOrg, getSession } from "@/lib/auth";
+import { can, getAccess } from "@/lib/access";
 import { db, schema } from "@/lib/db";
 import { buildMetadata } from "@/lib/seo";
 import { getTournament } from "@/lib/tournament";
@@ -22,9 +22,9 @@ export default async function FieldsPage({ params }: Params) {
   const found = getTournament(org, slug);
   if (!found) notFound();
 
-  const session = await getSession();
-  if (!session) redirect(`/login?next=/td/${org}/${slug}/fields`);
-  if (!canAdminOrg(session.personId, found.org.id)) notFound();
+  const access = await getAccess(found.org.id);
+  if (!access) redirect(`/login?next=/td/${org}/${slug}/fields`);
+  const readOnly = !can(access.role, "fields");
 
   const rows = db
     .select()
@@ -58,6 +58,31 @@ export default async function FieldsPage({ params }: Params) {
         ground.
       </p>
 
+      {readOnly ? (
+        <div className="mt-8 space-y-4">
+          <p className="mono">View only — the layout is the organisers&apos; to change</p>
+          <p className="text-[var(--color-dim)]">
+            {rows.length} field{rows.length === 1 ? "" : "s"} and {points.length} site
+            marker{points.length === 1 ? "" : "s"} on the map. See it on the{" "}
+            <Link href={`/t/${org}/${slug}/map`} className="underline hover:text-[var(--color-signal)]">
+              public site map
+            </Link>
+            .
+          </p>
+          {rows.length > 0 && (
+            <ul className="divide-y divide-[var(--color-line)] text-sm">
+              {rows.map((f) => (
+                <li key={f.id} className="flex justify-between gap-4 py-2">
+                  <span>{f.name}{f.showcase ? " · showcase" : ""}</span>
+                  <span className="mono">
+                    {f.preset} · {f.lengthM}×{f.widthM}m · {f.bearing}°
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ) : (
       <FieldMap
         org={org}
         slug={slug}
@@ -84,6 +109,7 @@ export default async function FieldsPage({ params }: Params) {
           color: p.color,
         }))}
       />
+      )}
     </main>
   );
 }

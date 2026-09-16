@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { canAdminOrg, getSession } from "@/lib/auth";
+import { can, getAccess } from "@/lib/access";
 import { buildMetadata } from "@/lib/seo";
 import { getTournament } from "@/lib/tournament";
 import { toDoc } from "@/lib/tournamentDoc";
@@ -21,9 +21,9 @@ export default async function DocPage({ params }: Params) {
   const found = getTournament(org, slug);
   if (!found) notFound();
 
-  const session = await getSession();
-  if (!session) redirect(`/login?next=/td/${org}/${slug}/doc`);
-  if (!canAdminOrg(session.personId, found.org.id)) notFound();
+  const access = await getAccess(found.org.id);
+  if (!access) redirect(`/login?next=/td/${org}/${slug}/doc`);
+  const readOnly = !can(access.role, "doc.apply");
 
   const doc = toDoc(found.tournament.id);
 
@@ -43,7 +43,12 @@ export default async function DocPage({ params }: Params) {
         to save, share, or commit to a repo.
       </p>
 
-      <DocEditor org={org} slug={slug} initial={JSON.stringify(doc, null, 2)} />
+      <DocEditor
+        org={org}
+        slug={slug}
+        initial={JSON.stringify(doc, null, 2)}
+        readOnly={readOnly}
+      />
     </main>
   );
 }

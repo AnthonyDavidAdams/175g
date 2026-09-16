@@ -12,7 +12,14 @@ type Draft = {
   status: string;
 };
 
-export default function Queue({ drafts }: { drafts: Draft[] }) {
+export default function Queue({
+  drafts,
+  readOnly = false,
+}: {
+  drafts: Draft[];
+  /** Staff and advisors can read the queue but approval is the TD's. */
+  readOnly?: boolean;
+}) {
   const [rows, setRows] = useState(drafts);
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -52,6 +59,9 @@ export default function Queue({ drafts }: { drafts: Draft[] }) {
           <pre className="mt-3 font-sans text-sm leading-relaxed whitespace-pre-wrap text-[var(--color-dim)]">
             {d.body}
           </pre>
+          {readOnly ? (
+            <p className="mono mt-5">Waiting for a TD to approve</p>
+          ) : (
           <div className="mt-5 flex gap-3">
             <button
               onClick={() => act(d.id, "send")}
@@ -68,6 +78,7 @@ export default function Queue({ drafts }: { drafts: Draft[] }) {
               Discard
             </button>
           </div>
+          )}
         </div>
       ))}
     </div>

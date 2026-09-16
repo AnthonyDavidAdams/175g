@@ -16,7 +16,13 @@ type Row = {
   status: string;
 };
 
-export default function ScoreEntry({ games }: { games: Row[] }) {
+export default function ScoreEntry({
+  games,
+  readOnly = false,
+}: {
+  games: Row[];
+  readOnly?: boolean;
+}) {
   const [rows, setRows] = useState(games);
   const [saving, setSaving] = useState<string | null>(null);
 
@@ -68,7 +74,13 @@ export default function ScoreEntry({ games }: { games: Row[] }) {
             </p>
             <div className="mt-3 space-y-2">
               {games.map((g) => (
-                <GameRow key={g.id} game={g} saving={saving === g.id} onSave={save} />
+                <GameRow
+                  key={g.id}
+                  game={g}
+                  saving={saving === g.id}
+                  onSave={save}
+                  readOnly={readOnly}
+                />
               ))}
             </div>
           </section>
@@ -81,10 +93,12 @@ function GameRow({
   game,
   saving,
   onSave,
+  readOnly = false,
 }: {
   game: Row;
   saving: boolean;
   onSave: (id: string, body: Record<string, unknown>) => void;
+  readOnly?: boolean;
 }) {
   const [home, setHome] = useState(game.homeScore?.toString() ?? "");
   const [away, setAway] = useState(game.awayScore?.toString() ?? "");
@@ -94,6 +108,22 @@ function GameRow({
   const [time, setTime] = useState(game.startTime ?? "");
   const [status, setStatus] = useState(game.status);
   const final = game.status === "final";
+
+  if (readOnly) {
+    return (
+      <div className={`panel p-3 ${final ? "opacity-70" : ""}`}>
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="mono w-16 shrink-0">F{game.field}</span>
+          <span className="flex-1 text-right text-sm">{game.homeName}</span>
+          <span className="tabular w-14 text-center">{game.homeScore ?? "–"}</span>
+          <span className="text-[var(--color-faint)]">–</span>
+          <span className="tabular w-14 text-center">{game.awayScore ?? "–"}</span>
+          <span className="flex-1 text-sm">{game.awayName}</span>
+          <span className="mono w-20 text-right">{game.status.replace("_", " ")}</span>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={`panel p-3 ${final ? "opacity-70" : ""}`}>

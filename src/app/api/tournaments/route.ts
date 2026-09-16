@@ -2,8 +2,10 @@ import { and, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { can, getRole } from "@/lib/access";
 import { getSession } from "@/lib/auth";
 import { db, schema } from "@/lib/db";
+import { applyTemplate, canSeeTemplate, getTemplate } from "@/lib/templates";
 
 /**
  * Create a tournament, and the org that owns it if this is someone's first.
@@ -28,6 +30,9 @@ const Body = z
     sanctioned: z.boolean().nullish(),
     /** Join an org the user is already a member of, instead of making one. */
     orgSlug: z.string().nullish(),
+    /** Start from an event template; token unlocks a link-shared one. */
+    templateId: z.string().nullish(),
+    templateToken: z.string().nullish(),
   })
   .refine((v) => !!v.orgSlug || (v.orgName ?? "").trim().length >= 2, {
     message: "Give your program a name.",
@@ -71,6 +76,18 @@ export async function POST(req: Request) {
   }
   const input = parsed.data;
 
+  // --- template (validate before creating anything) -----------------------
+  const template = input.templateId ? getTemplate(input.templateId) : null;
+  if (input.templateId && !template) {
+    return NextResponse.json({ error: "That template doesn't exist." }, { status: 404 });
+  }
+  if (template && !canSeeTemplate(template, session.personId, input.templateToken)) {
+    return NextResponse.json(
+      { error: "You don't have access to that template." },
+      { status: 403 },
+    );
+  }
+
   // --- org ----------------------------------------------------------------
   let orgId: string;
   let orgSlug: string;
@@ -84,19 +101,23 @@ export async function POST(req: Request) {
     if (!org) {
       return NextResponse.json({ error: "That program doesn't exist." }, { status: 404 });
     }
-    const member = db
-      .select()
-      .from(schema.orgMembers)
-      .where(
-        and(
-          eq(schema.orgMembers.orgId, org.id),
-          eq(schema.orgMembers.personId, session.personId),
-        ),
-      )
-      .get();
-    if (!member) {
+    const role = getRole(session.personId, org.id);
+    if (!role) {
       return NextResponse.json(
         { error: "You don't have access to that program." },
+        { status: 403 },
+      );
+    }
+    // Staff and advisors can see a program's tournaments but not start new ones
+    // under its name. An advisor who wants to run their own event starts a
+    // new program, which they then own.
+    if (!can(role, "tournament.create")) {
+      return NextResponse.json(
+        {
+          error:
+            "Your role in that program can't start a tournament under its name. " +
+            "Create a new program instead, or ask an owner or TD.",
+        },
         { status: 403 },
       );
     }
@@ -158,10 +179,53 @@ export async function POST(req: Request) {
     })
     .run();
 
+  // --- template -----------------------------------------------------------
+  let templateReport: { applied: boolean; errors: string[] } | undefined;
+  if (template) {
+    const report = applyTemplate(template.id, id, {
+      name: input.tournamentName,
+      startDate: input.startDate ?? null,
+      endDate: input.endDate ?? null,
+    });
+    templateReport = { applied: report.applied, errors: report.errors };
+    // The form's explicit choices win over the template's defaults.
+    const overrides: Record<string, unknown> = {};
+    if (input.division) overrides.division = input.division;
+    if (input.teamTarget) overrides.teamTarget = input.teamTarget;
+    if (input.sanctioned !== null && input.sanctioned !== undefined) {
+      overrides.sanctioned = input.sanctioned;
+    }
+    if (input.city) overrides.city = input.city;
+    if (Object.keys(overrides).length) {
+      db.update(schema.tournaments)
+        .set(overrides)
+        .where(eq(schema.tournaments.id, id))
+        .run();
+    }
+    if (report.applied) {
+      db.insert(schema.agentMessages)
+        .values({
+          id: nanoid(),
+          tournamentId: id,
+          thread: "main",
+          role: "assistant",
+          content:
+            `This tournament started from the template "${template.name}". ` +
+            `Its plan, policies, waivers and sponsor prospects are already in place` +
+            (input.startDate
+              ? ", with deadlines set from your event date."
+              : ". Set the event date and I'll put dates on the deadlines.") +
+            " Tell me what's different about your edition and I'll adjust.",
+        })
+        .run();
+    }
+  }
+
   return NextResponse.json({
     ok: true,
     orgSlug,
     slug,
     url: `/td/${orgSlug}/${slug}`,
+    template: templateReport,
   });
 }

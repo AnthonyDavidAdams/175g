@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { canAdminOrg, getSession } from "@/lib/auth";
+import { requireAccess } from "@/lib/access";
 import { applyDoc, toDoc } from "@/lib/tournamentDoc";
 import { getTournament } from "@/lib/tournament";
 
@@ -13,10 +13,9 @@ export async function GET(
   const found = getTournament(org, slug);
   if (!found) return NextResponse.json({ error: "Not found." }, { status: 404 });
 
-  const session = await getSession();
-  if (!session || !canAdminOrg(session.personId, found.org.id)) {
-    return NextResponse.json({ error: "Not authorised." }, { status: 403 });
-  }
+  // Reading the document is a read; every member, advisors included.
+  const auth = await requireAccess(found.org.id, "view");
+  if (!auth.ok) return auth.response;
 
   // Contacts are personal data: opt in explicitly for a true backup.
   const includeContacts =
@@ -37,10 +36,8 @@ export async function POST(
   const found = getTournament(org, slug);
   if (!found) return NextResponse.json({ error: "Not found." }, { status: 404 });
 
-  const session = await getSession();
-  if (!session || !canAdminOrg(session.personId, found.org.id)) {
-    return NextResponse.json({ error: "Not authorised." }, { status: 403 });
-  }
+  const auth = await requireAccess(found.org.id, "doc.apply");
+  if (!auth.ok) return auth.response;
 
   const body = await req.json().catch(() => null);
   if (!body?.doc) {

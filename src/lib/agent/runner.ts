@@ -1,8 +1,9 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { db, schema } from "../db";
-import { TOOLS, runTool } from "./tools";
+import { ROLE_LABEL, type Role } from "../access";
+import { runTool, toolsForRole } from "./tools";
 
 const MODEL = process.env.ANTHROPIC_MODEL ?? "claude-sonnet-5";
 const MAX_TURNS = 8;
@@ -174,6 +175,42 @@ PRIVACY
 Never set or upgrade someone's marketing consent. It comes from the person, at
 registration, and is revocable.`;
 
+/**
+ * What changes when someone other than the TD is talking. The tool set is
+ * already filtered by role in toolsForRole; this tells the agent why some
+ * tools are missing so it doesn't promise things it cannot do.
+ */
+const ROLE_ADDENDUM: Record<Role, string> = {
+  owner: "",
+  td: "",
+  staff: `
+
+WHO YOU ARE TALKING TO
+
+This person is STAFF, not the TD: a scorekeeper, a field marshal, the volunteer
+lead. They can enter and correct scores, move games, post announcements and
+work the task list, and you have exactly those tools. You cannot change the
+tournament's facts, draft outreach, touch waivers or publish anything for them.
+If they ask for one of those, say it needs the TD and offer to leave a note the
+TD will see. Be brisk — they are usually standing on a field.`,
+  advisor: `
+
+WHO YOU ARE TALKING TO
+
+This person is an ADVISOR — an alum who has run this before, a faculty sponsor,
+a mentor from another program. They are here to oversee and help, not to run
+the event, and by design they cannot change anything. You have read-only tools
+plus leave_note and save_template.
+
+Work like a good second opinion. Read the state, tell them honestly where the
+event is strong and where it is exposed, and be specific about what the TD
+should do next and by when. When they want the TD to act on something, use
+leave_note in their words. When they say "this is how we did it" or want to
+hand the TD a starting point, save_template packages what exists so they can
+share it. Do not pretend to make changes you cannot make, and do not tell them
+to go make the changes themselves — they can't. The TD owns the event.`,
+};
+
 let client: Anthropic | null = null;
 function anthropic() {
   if (!client) {
@@ -187,15 +224,33 @@ export type AgentTurn = {
   toolCalls: { name: string; input: unknown; result: string }[];
 };
 
+export type AgentOpts = {
+  /** Who is talking. Decides the tool set and the thread. */
+  role?: Role;
+  personId?: string;
+  /** "main" for the organisers; advisors get "advisor:<personId>". */
+  thread?: string;
+};
+
+export function threadFor(role: Role, personId: string) {
+  return role === "advisor" ? `advisor:${personId}` : "main";
+}
+
 export async function runAgent(
   tournamentId: string,
   orgId: string,
   userMessage: string,
+  opts: AgentOpts = {},
 ): Promise<AgentTurn> {
+  const role: Role = opts.role ?? "td";
+  const thread = opts.thread ?? "main";
+
   db.insert(schema.agentMessages)
     .values({
       id: nanoid(),
       tournamentId,
+      thread,
+      personId: opts.personId ?? null,
       role: "user",
       content: userMessage,
     })
@@ -204,7 +259,12 @@ export async function runAgent(
   const history = db
     .select()
     .from(schema.agentMessages)
-    .where(eq(schema.agentMessages.tournamentId, tournamentId))
+    .where(
+      and(
+        eq(schema.agentMessages.tournamentId, tournamentId),
+        eq(schema.agentMessages.thread, thread),
+      ),
+    )
     .orderBy(asc(schema.agentMessages.createdAt))
     .all();
 
@@ -222,8 +282,13 @@ export async function runAgent(
     const response = await anthropic().messages.create({
       model: MODEL,
       max_tokens: 4096,
-      system: SYSTEM,
-      tools: TOOLS,
+      system:
+        SYSTEM +
+        ROLE_ADDENDUM[role] +
+        (opts.personId
+          ? `\n\nThe person typing is signed in with the role "${ROLE_LABEL[role]}".`
+          : ""),
+      tools: toolsForRole(role),
       messages,
     });
 
@@ -247,6 +312,8 @@ export async function runAgent(
         result = await runTool(use.name, use.input as Record<string, unknown>, {
           tournamentId,
           orgId,
+          personId: opts.personId,
+          role,
         });
       } catch (err) {
         result = `Tool failed: ${err instanceof Error ? err.message : String(err)}`;
@@ -266,6 +333,7 @@ export async function runAgent(
     .values({
       id: nanoid(),
       tournamentId,
+      thread,
       role: "assistant",
       content: finalText || "(no response)",
       toolCalls: toolCalls.length ? JSON.stringify(toolCalls) : null,

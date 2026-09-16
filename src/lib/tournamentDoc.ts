@@ -39,7 +39,7 @@ import { db, schema } from "./db";
 
 export const DOC_VERSION = 1;
 
-const Site = z.object({
+export const Site = z.object({
   key: z.string().min(1),
   name: z.string().min(1),
   address: z.string().nullish(),
@@ -50,7 +50,7 @@ const Site = z.object({
   parkingNotes: z.string().nullish(),
 });
 
-const Field = z.object({
+export const Field = z.object({
   name: z.string().min(1),
   site: z.string().nullish(),
   preset: z.string().default("usau"),
@@ -63,7 +63,7 @@ const Field = z.object({
   showcase: z.boolean().default(false),
 });
 
-const Marker = z.object({
+export const Marker = z.object({
   kind: z.string().min(1),
   label: z.string().min(1),
   lat: z.number(),
@@ -72,7 +72,7 @@ const Marker = z.object({
   site: z.string().nullish(),
 });
 
-const Team = z.object({
+export const Team = z.object({
   name: z.string().min(1),
   school: z.string().nullish(),
   division: z.string().nullish(),
@@ -91,7 +91,7 @@ const Team = z.object({
   notes: z.string().nullish(),
 });
 
-const Game = z.object({
+export const Game = z.object({
   code: z.string().min(1),
   day: z.number().nullish(),
   round: z.number().nullish(),
@@ -111,14 +111,14 @@ const Game = z.object({
     .default("scheduled"),
 });
 
-const Waiver = z.object({
+export const Waiver = z.object({
   title: z.string().min(1),
   audience: z.enum(["participant", "team", "minor", "volunteer"]).default("participant"),
   required: z.boolean().default(true),
   body: z.string().min(1),
 });
 
-const Task = z.object({
+export const Task = z.object({
   due: z.string().nullish(),
   start: z.string().nullish(),
   phase: z.string().nullish(),
@@ -130,7 +130,7 @@ const Task = z.object({
   notes: z.string().nullish(),
 });
 
-const Sponsor = z.object({
+export const Sponsor = z.object({
   org: z.string().min(1),
   contactName: z.string().nullish(),
   email: z.string().nullish(),
